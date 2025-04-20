@@ -101,7 +101,7 @@ const authMiddleware = async (req, res, next) => {
     const tokenPrefix = token.substring(0, 20) + '...';
     console.log(`Attempting to verify token: ${tokenPrefix}`);
     
-    // אימות ה-token עם MongoDB
+    // אימות ה-token עם MongoDB - יש לחכות לסיום ה-Promise
     const decodedToken = await mongodbService.verifyIdToken(token);
     
     if (!decodedToken || !decodedToken.uid) {
@@ -113,6 +113,15 @@ const authMiddleware = async (req, res, next) => {
     }
     
     console.log(`Successfully authenticated user: ${decodedToken.uid}`);
+    
+    // בדיקה שמשתמש מורשה לגשת לנתונים של userID מסוים
+    if (req.params.userId && req.params.userId !== decodedToken.uid) {
+      console.log(`Forbidden: userId in params (${req.params.userId}) doesn't match authenticated user (${decodedToken.uid})`);
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to access this resource'
+      });
+    }
     
     // הוספת מזהה המשתמש לבקשה
     req.userId = decodedToken.uid;

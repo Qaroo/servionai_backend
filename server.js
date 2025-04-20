@@ -1,13 +1,11 @@
 // This file is used as an entry point for Render deployment
 // It simply requires the actual server entry point
 
-console.log('Starting server from root server.js file...');
-console.log('Current directory:', process.cwd());
-console.log('Files in current directory:', require('fs').readdirSync('.'));
+console.log('Loading from server/server.js, redirecting to index.js');
 
 try {
-  require('./server/index.js');
-  console.log('Server started successfully');
+  require('./index.js');
+  console.log('Server started successfully via server.js in server directory');
 } catch (error) {
-  console.error('Error starting server:', error);
+  console.error('Error starting server from server/server.js:', error);
 } 

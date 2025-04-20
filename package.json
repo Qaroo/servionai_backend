@@ -25,6 +25,7 @@
     "express-rate-limit": "^7.5.0",
     "firebase-admin": "^11.10.1",
     "helmet": "^7.0.0",
+    "mongoose": "^8.13.2",
     "morgan": "^1.10.0",
     "openai": "^4.24.1",
     "qrcode": "^1.5.4",

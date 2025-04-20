@@ -1,6 +1,2 @@
-2025/04/20-20:06:26.558 a203 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/MANIFEST-000001
-2025/04/20-20:06:26.559 a203 Recovering log #3
-2025/04/20-20:06:26.559 a203 Reusing old log /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/000003.log 
-2025/04/20-20:07:27.670 f803 Level-0 table #5: started
-2025/04/20-20:07:27.684 f803 Level-0 table #5: 17961 bytes OK
-2025/04/20-20:07:27.696 f803 Delete type=0 #3
+2025/04/20-23:26:23.463 b403 Creating DB /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb since it was missing.
+2025/04/20-23:26:23.484 b403 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/MANIFEST-000001

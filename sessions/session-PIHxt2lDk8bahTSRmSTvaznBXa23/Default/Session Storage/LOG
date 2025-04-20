@@ -1,3 +1,2 @@
-2025/04/20-20:06:27.667 a203 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Session Storage/MANIFEST-000001
-2025/04/20-20:06:27.667 a203 Recovering log #3
-2025/04/20-20:06:27.668 a203 Reusing old log /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Session Storage/000003.log 
+2025/04/20-23:26:24.072 a003 Creating DB /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Session Storage since it was missing.
+2025/04/20-23:26:24.098 a003 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Session Storage/MANIFEST-000001

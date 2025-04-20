@@ -98,6 +98,12 @@ const initializeMongoDB = async () => {
  */
 async function verifyIdToken(token) {
   try {
+    // וידוא שהטוקן הוא מחרוזת ולא Promise
+    if (!token || typeof token !== 'string') {
+      console.error(`Invalid token type: ${typeof token}`);
+      throw new Error('Invalid token format - must be a string');
+    }
+
     // במצב פיתוח, מחזיר משתמש מדומה
     if (process.env.NODE_ENV === 'development') {
       console.log(`[DEV] Using mock authentication in development mode`);
