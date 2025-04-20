@@ -1,0 +1,963 @@
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode_terminal = require('qrcode-terminal');
+const qrcode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
+
+const firebaseService = require('./firebase');
+const openaiService = require('./openai');
+
+// מאגר של חיבורי WhatsApp פעילים
+const clients = new Map();
+
+/**
+ * אתחול מערכת ה-WhatsApp והרשמה לאירועים
+ * @param {Object} io - מופע Socket.IO server
+ */
+const initializeWhatsApp = (io) => {
+  // טיפול באירועי Socket.IO
+  io.on('connection', (socket) => {
+    console.log('New client connected to WhatsApp service:', socket.id);
+
+    // אירוע התנתקות
+    socket.on('disconnect', () => {
+      console.log('Client disconnected from WhatsApp service:', socket.id);
+    });
+  });
+
+  console.log('WhatsApp service initialized');
+};
+
+/**
+ * יצירת לקוח WhatsApp חדש למשתמש
+ * @param {string} userId - מזהה המשתמש
+ * @returns {Promise<Object>} - מידע על החיבור
+ */
+const createClient = async (userId) => {
+  try {
+    // בדיקה אם כבר קיים לקוח למשתמש זה
+    if (clients.has(userId)) {
+      const existingClient = clients.get(userId);
+      
+      // אם הלקוח כבר מאותחל, החזר שגיאה
+      if (existingClient.status === 'CONNECTED') {
+        return { 
+          success: false, 
+          error: 'WhatsApp client already connected' 
+        };
+      }
+      
+      // אם הלקוח בתהליך אתחול, החזר את ה-QR code הקיים
+      if (existingClient.status === 'INITIALIZING' && existingClient.qrCode) {
+        return { 
+          success: true, 
+          status: 'INITIALIZING',
+          qrCode: existingClient.qrCode 
+        };
+      }
+      
+      // סגירת הלקוח הקיים אם הוא לא תקין
+      try {
+        await existingClient.client.destroy();
+      } catch (error) {
+        console.error('Error destroying existing client:', error);
+      }
+      
+      // הסרת הלקוח מהמאגר
+      clients.delete(userId);
+    }
+    
+    // יצירת תיקיית session אם לא קיימת
+    const sessionDir = path.join(process.env.SESSIONS_DIR || './sessions', userId);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    } else {
+      console.log(`Using existing session directory: ${sessionDir}`);
+    }
+    
+    // תצורה של puppeteer לעבודה אופטימלית - headless: "new" הוא המצב המודרני המומלץ
+    const puppeteerConfig = {
+      headless: "new",
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process', // משפר את היציבות במערכות מסוימות
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-features=site-per-process', // יכול להקטין צריכת זיכרון
+        '--disable-translate',
+        '--disable-sync',
+        '--metrics-recording-only',
+        '--disable-browser-side-navigation'
+      ],
+      ignoreHTTPSErrors: true,
+      defaultViewport: { width: 1280, height: 800 } // גודל חלון גדול יותר לנוחות
+    };
+
+    // יצירת לקוח WhatsApp חדש
+    const client = new Client({
+      authStrategy: new LocalAuth({ 
+        clientId: userId,
+        dataPath: process.env.SESSIONS_DIR || './sessions'
+      }),
+      puppeteer: puppeteerConfig,
+      webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2332.15.html'
+      },
+      webVersion: '2.2332.15' // ספק גרסה ספציפית לשיפור היציבות
+    });
+    
+    // אובייקט לשמירת מידע על החיבור
+    const clientInfo = {
+      client,
+      status: 'INITIALIZING',
+      qrCode: null,
+      createdAt: new Date(),
+      userId
+    };
+    
+    // שמירת הלקוח במאגר
+    clients.set(userId, clientInfo);
+    
+    // אירוע קבלת קוד QR
+    client.on('qr', async (qr) => {
+      // הצגת קוד QR במסוף
+      console.log('======================================');
+      console.log(`QR Code received for user: ${userId}`);
+      console.log('======================================');
+      qrcode_terminal.generate(qr, { small: true });
+      
+      // יצירת QR code כתמונה
+      try {
+        // שמירת קוד ה-QR המקורי 
+        clientInfo.rawQrCode = qr;
+        
+        // יצירת תמונת QR באיכות גבוהה
+        // במקום לשמור את כל הקוד כ-data URL, נשמור רק את הערך עצמו
+        // זה יקטין את גודל הקוד שצריך להיות מוצג
+        if (qr.length > 1000 && process.env.NODE_ENV === 'development') {
+          // במצב פיתוח נשתמש בקוד קצר יותר
+          console.log('QR code is too long, generating a simpler one for development');
+          const qrDataURL = await qrcode.toDataURL('https://servionai.com/connect-whatsapp', {
+            errorCorrectionLevel: 'H',
+            margin: 4,
+            scale: 16,
+            width: 1000,
+            color: {
+              dark: '#000000',
+              light: '#FFFFFF'
+            }
+          });
+          clientInfo.qrCode = qrDataURL;
+        } else {
+          // יצירת תמונת QR באיכות גבוהה
+          const qrDataURL = await qrcode.toDataURL(qr, {
+            errorCorrectionLevel: 'H',
+            margin: 4,
+            scale: 16,
+            width: 1000,
+            color: {
+              dark: '#000000',
+              light: '#FFFFFF'
+            }
+          });
+          clientInfo.qrCode = qrDataURL;
+        }
+        
+        clientInfo.status = 'INITIALIZING';
+        
+        // עדכון סטטוס החיבור ב-Firebase
+        firebaseService.updateWhatsAppStatus(userId, 'connecting');
+      } catch (qrError) {
+        console.error('Error generating QR image:', qrError);
+        // במקרה של שגיאה, נשתמש בקוד המקורי
+        clientInfo.qrCode = qr;
+        clientInfo.status = 'INITIALIZING';
+      }
+    });
+    
+    // אירוע אימות מוצלח
+    client.on('authenticated', () => {
+      console.log(`Client ${userId} authenticated successfully`);
+      clientInfo.status = 'AUTHENTICATED';
+    });
+    
+    // אירוע מוכן לשימוש
+    client.on('ready', async () => {
+      console.log(`Client ${userId} is ready and connected`);
+      clientInfo.status = 'CONNECTED';
+      
+      // עדכון סטטוס החיבור ב-Firebase
+      await firebaseService.updateWhatsAppStatus(userId, 'connected');
+      
+      // נקה את קוד ה-QR כי כבר לא צריך אותו
+      clientInfo.qrCode = null;
+      
+      // נקבל מידע על המשתמש המחובר
+      try {
+        const info = await client.getState();
+        console.log(`Connected WhatsApp state: ${info}`);
+        
+        // נסיון לקבל מידע על הטלפון המחובר
+        try {
+          const phoneInfo = await client.getWid();
+          console.log(`Connected phone number: ${phoneInfo}`);
+        } catch (err) {
+          console.log('Could not get phone info:', err.message);
+        }
+      } catch (err) {
+        console.log('Could not get state info:', err.message);
+      }
+    });
+    
+    // אירוע ניתוק
+    client.on('disconnected', async (reason) => {
+      console.log(`Client ${userId} disconnected. Reason:`, reason);
+      clientInfo.status = 'DISCONNECTED';
+      
+      // עדכון סטטוס החיבור ב-Firebase
+      await firebaseService.updateWhatsAppStatus(userId, 'disconnected');
+      
+      // הסרת הלקוח מהמאגר
+      clients.delete(userId);
+    });
+    
+    // אירוע קבלת הודעה
+    client.on('message', async (message) => {
+      try {
+        if (message.fromMe) return; // התעלם מהודעות שנשלחו על ידי המשתמש
+        const isGroup = message.from.endsWith('@g.us');
+        if(isGroup) return;//התעלם מהודעות בקבוצות
+        console.log(`New message for ${userId} from ${message.from}:`, message.body);
+        
+        // טיפול בהודעה נכנסת
+        await handleIncomingMessage(userId, message);
+      } catch (error) {
+        console.error('Error handling incoming message:', error);
+      }
+    });
+    
+    // אתחול הלקוח עם טיפול בשגיאות
+    console.log(`Initializing WhatsApp client for user ${userId}`);
+    client.initialize()
+      .then(() => console.log(`Client initialized for ${userId}`))
+      .catch((error) => {
+        console.error(`Error initializing client for ${userId}:`, error);
+        clientInfo.status = 'ERROR';
+        clients.delete(userId);
+      });
+    
+    // החזרת מידע על החיבור
+    return { 
+      success: true, 
+      status: 'INITIALIZING',
+      message: 'WhatsApp client initializing, waiting for QR code'
+    };
+  } catch (error) {
+    console.error('Error creating WhatsApp client:', error);
+    throw error;
+  }
+};
+
+/**
+ * טיפול בהודעה נכנסת
+ * @param {string} userId - מזהה המשתמש
+ * @param {Object} message - אובייקט ההודעה מ-whatsapp-web.js
+ */
+const handleIncomingMessage = async (userId, message) => {
+  try {
+    // קבלת מידע הלקוח
+    const phoneNumber = message.from;
+    const chat = await message.getChat();
+    const contact = await message.getContact();
+    const name = contact.name || contact.pushname || null;
+    
+    console.log(`Processing incoming message for user ${userId} from ${phoneNumber}, name: ${name}`);
+    console.log(`Message content: "${message.body}"`);
+    
+    // יצירת/קבלת שיחה ב-Firestore
+    const conversation = await firebaseService.getOrCreateConversation(userId, phoneNumber, name);
+    
+    // שמירת ההודעה הנכנסת ב-Firestore
+    await firebaseService.saveWhatsAppMessage(userId, conversation.id, {
+      messageId: message.id._serialized,
+      body: message.body,
+      fromMe: false,
+      timestamp: new Date(),
+      type: message.type,
+      hasMedia: message.hasMedia,
+      phoneNumber
+    });
+    
+    // קבלת נתוני אימון הסוכן
+    const agentData = await firebaseService.getAgentTrainingData(userId);
+    console.log(`Retrieved agent training data for user ${userId}:`, JSON.stringify(agentData, null, 2));
+    
+    if (!agentData || !agentData.businessInfo) {
+      console.log(`No business info for user ${userId}, skipping AI response`);
+      return;
+    }
+    
+    // בדיקה שיש את כל השדות הנדרשים
+    const businessInfo = agentData.businessInfo;
+    if (!businessInfo.name || !businessInfo.industry || !businessInfo.services) {
+      console.log(`Missing required business fields for user ${userId}. Business info:`, JSON.stringify(businessInfo, null, 2));
+      console.log(`Using existing data anyway and providing default values if needed.`);
+      
+      // השלמת ערכים חסרים עם ערכי ברירת מחדל
+      businessInfo.name = businessInfo.name || "העסק שלי";
+      businessInfo.industry = businessInfo.industry || "שירותים";
+      businessInfo.services = businessInfo.services || "שירותים כלליים";
+    }
+    
+    // קבלת תגובה מה-AI
+    console.log(`Requesting AI response for user ${userId} with business info:`, JSON.stringify(businessInfo, null, 2));
+    const aiResponse = await openaiService.getAIResponse(message.body, [], agentData);
+    console.log(`Received AI response for user ${userId}: "${aiResponse}"`);
+    
+    // שליחת תגובת AI
+    const clientInfo = clients.get(userId);
+    if (clientInfo && clientInfo.status === 'CONNECTED') {
+      await clientInfo.client.sendMessage(phoneNumber, aiResponse);
+      console.log(`Sent AI response to ${phoneNumber} for user ${userId}`);
+      
+      // שמירת תגובת ה-AI ב-Firestore
+      await firebaseService.saveWhatsAppMessage(userId, conversation.id, {
+        messageId: uuidv4(),
+        body: aiResponse,
+        fromMe: true,
+        isAI: true,
+        timestamp: new Date(),
+        type: 'chat',
+        hasMedia: false,
+        phoneNumber
+      });
+    } else {
+      console.log(`Cannot send AI response - client not connected for user ${userId}. Client status: ${clientInfo ? clientInfo.status : 'no client'}`);
+    }
+  } catch (error) {
+    console.error('Error handling incoming message:', error);
+  }
+};
+
+/**
+ * בדיקת סטטוס חיבור WhatsApp של משתמש
+ * @param {string} userId - מזהה המשתמש
+ * @returns {Promise<Object>} - סטטוס החיבור
+ */
+const checkStatus = async (userId) => {
+  try {
+    // בדיקה אם קיים לקוח למשתמש זה
+    if (clients.has(userId)) {
+      const clientInfo = clients.get(userId);
+      
+      return { 
+        success: true, 
+        status: clientInfo.status.toLowerCase()
+      };
+    }
+    
+    // במצב פיתוח, אם אין לקוח פעיל, נחזיר סטטוס מנותק
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`Development mode: No active client for user ${userId}. Returning disconnected status.`);
+      return { 
+        success: true, 
+        status: 'disconnected',
+        isDevelopment: true
+      };
+    }
+    
+    // אם לא קיים לקוח, בדוק אם יש מידע session ב-Firestore
+    try {
+      const connectionInfo = await firebaseService.getWhatsAppSession(userId);
+      
+      // הפחתת כמות הלוגים - רק לוג אחד כל כמה בקשות
+      if (Math.random() < 0.1) { // 10% מהבקשות יציגו לוג
+        console.log(`No active client for user ${userId}. Session info from Firestore:`, 
+          connectionInfo ? connectionInfo.status : 'none');
+      }
+      
+      if (connectionInfo && connectionInfo.status === 'connected') {
+        console.log(`Session data indicates user ${userId} was previously connected. Will try to reinitialize.`);
+        
+        // במצב של פער בין המידע ב-Firestore למצב בפועל, עדכן ל-disconnected
+        try {
+          await firebaseService.updateWhatsAppStatus(userId, 'disconnected');
+        } catch (updateError) {
+          console.warn(`Could not update status to disconnected: ${updateError.message}`);
+          // נמשיך למרות השגיאה
+        }
+        
+        return { 
+          success: true, 
+          status: 'disconnected',
+          message: 'Previous session found but no active connection. Ready to reconnect.'
+        };
+      }
+      
+      // הפחתת כמות הלוגים - רק לוג אחד כל כמה בקשות
+      if (Math.random() < 0.1) { // 10% מהבקשות יציגו לוג
+        console.log(`No session data found for user ${userId} or status is disconnected`);
+      }
+      
+      return { 
+        success: true, 
+        status: 'disconnected' 
+      };
+    } catch (firebaseError) {
+      console.error(`Firebase error when checking status for user ${userId}:`, firebaseError);
+      
+      // במקרה של שגיאת Firebase, נחזיר סטטוס מנותק כדי לאפשר התחברות מחדש
+      return { 
+        success: true, 
+        status: 'disconnected',
+        message: 'Could not retrieve previous session info. Ready to connect.'
+      };
+    }
+  } catch (error) {
+    console.error('Error checking WhatsApp status:', error);
+    return { 
+      success: false, 
+      status: 'error',
+      error: error.message 
+    };
+  }
+};
+
+/**
+ * קבלת קוד QR החדש ביותר של משתמש
+ * @param {string} userId - מזהה המשתמש
+ * @returns {Promise<Object>} - מידע על קוד ה-QR
+ */
+const getQrCode = async (userId) => {
+  try {
+    // בדיקה אם קיים לקוח למשתמש זה
+    if (clients.has(userId)) {
+      const clientInfo = clients.get(userId);
+      
+      // אם הסטטוס הוא מחובר, אין צורך בקוד QR
+      if (clientInfo.status === 'CONNECTED') {
+        return { 
+          success: true, 
+          status: 'connected',
+          message: 'WhatsApp is already connected'
+        };
+      }
+      
+      // אם קיים קוד QR, החזר אותו
+      if (clientInfo.qrCode) {
+        console.log(`Returning existing QR code for user ${userId}`);
+        return { 
+          success: true, 
+          status: 'initializing',
+          qrCode: clientInfo.qrCode 
+        };
+      }
+      
+      // אם אין קוד QR אבל יש לקוח בתהליך אתחול, המתן עד 5 שניות לקבלת קוד QR
+      if (clientInfo.status === 'INITIALIZING') {
+        console.log(`Waiting for QR code generation for user ${userId}...`);
+        
+        // נמתין עד 5 שניות לקבלת קוד QR
+        let attempts = 0;
+        const maxAttempts = 10;
+        
+        while (attempts < maxAttempts) {
+          // בדיקה אם התקבל קוד QR בינתיים
+          if (clientInfo.qrCode) {
+            console.log(`QR code generated for user ${userId} after waiting`);
+            return { 
+              success: true, 
+              status: 'initializing',
+              qrCode: clientInfo.qrCode 
+            };
+          }
+          
+          // אם לקוח התחבר בינתיים
+          if (clientInfo.status === 'CONNECTED') {
+            return { 
+              success: true, 
+              status: 'connected',
+              message: 'WhatsApp is now connected'
+            };
+          }
+          
+          // אם הלקוח נכשל
+          if (clientInfo.status === 'ERROR') {
+            throw new Error('WhatsApp initialization failed');
+          }
+          
+          // המתנה של 500 מילישניות
+          await new Promise(resolve => setTimeout(resolve, 500));
+          attempts++;
+        }
+        
+        // אם הגענו לכאן, עדיין אין קוד QR
+        console.log(`No QR code generated for user ${userId} after multiple attempts`);
+        return { 
+          success: false, 
+          status: 'initializing',
+          message: 'Still waiting for QR code generation. Please try again in a few seconds.'
+        };
+      }
+    }
+    
+    // אם לא קיים לקוח, יצירת לקוח חדש
+    console.log(`No WhatsApp client exists for user ${userId}, creating new client`);
+    const initResult = await createClient(userId);
+    
+    // אם יצירת הלקוח הצליחה, ננסה לקבל את הקוד מיד
+    if (initResult.success && clients.has(userId)) {
+      const clientInfo = clients.get(userId);
+      
+      // אם כבר יש קוד QR, נחזיר אותו מיד
+      if (clientInfo.qrCode) {
+        return { 
+          success: true, 
+          status: 'initializing',
+          qrCode: clientInfo.qrCode 
+        };
+      }
+    }
+    
+    return { 
+      success: true, 
+      status: 'initializing',
+      message: 'WhatsApp client initializing, waiting for QR code. Please try again in a few seconds.'
+    };
+  } catch (error) {
+    console.error('Error getting QR code:', error);
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+};
+
+/**
+ * שליחת הודעה ל-WhatsApp
+ * @param {string} userId - מזהה המשתמש
+ * @param {string} chatId - מזהה השיחה
+ * @param {string} message - תוכן ההודעה
+ * @returns {Promise<Object>} - תוצאת השליחה
+ */
+const sendMessage = async (userId, chatId, message) => {
+  try {
+    // בדיקה אם קיים לקוח למשתמש זה
+    if (!clients.has(userId)) {
+      return { 
+        success: false, 
+        error: 'WhatsApp client not connected' 
+      };
+    }
+    
+    const clientInfo = clients.get(userId);
+    
+    // בדיקה אם הלקוח מחובר
+    if (clientInfo.status !== 'CONNECTED') {
+      return { 
+        success: false, 
+        error: 'WhatsApp client not ready' 
+      };
+    }
+    
+    // קבלת פרטי השיחה מ-Firestore
+    const conversationDoc = await firebaseService.db()
+      .collection('users')
+      .doc(userId)
+      .collection('conversations')
+      .doc(chatId)
+      .get();
+    
+    if (!conversationDoc.exists) {
+      return { 
+        success: false, 
+        error: 'Conversation not found' 
+      };
+    }
+    
+    const conversation = conversationDoc.data();
+    
+    // שליחת ההודעה ל-WhatsApp
+    const result = await clientInfo.client.sendMessage(conversation.phoneNumber, message);
+    
+    // שמירת ההודעה ב-Firestore
+    await firebaseService.saveWhatsAppMessage(userId, chatId, {
+      messageId: result.id._serialized,
+      body: message,
+      fromMe: true,
+      timestamp: new Date(),
+      type: 'chat',
+      hasMedia: false,
+      phoneNumber: conversation.phoneNumber
+    });
+    
+    return { 
+      success: true, 
+      messageId: result.id._serialized 
+    };
+  } catch (error) {
+    console.error('Error sending message:', error);
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+};
+
+/**
+ * ניתוק חיבור WhatsApp למשתמש
+ * @param {string} userId - מזהה המשתמש
+ * @returns {Promise<Object>} - סטטוס הניתוק
+ */
+const disconnect = async (userId) => {
+  try {
+    console.log(`Attempting to disconnect WhatsApp for user ${userId}`);
+    
+    if (clients.has(userId)) {
+      const clientInfo = clients.get(userId);
+      
+      try {
+        console.log(`Destroying client for user ${userId}`);
+        await clientInfo.client.destroy();
+        console.log(`Client destroyed successfully for user ${userId}`);
+      } catch (error) {
+        console.error(`Error destroying client for user ${userId}:`, error);
+        // אנחנו ממשיכים בתהליך הניתוק גם במקרה של שגיאה
+      }
+      
+      // מחיקת ה-client מהרשימה
+      clients.delete(userId);
+      console.log(`Client removed from active clients map for user ${userId}`);
+    } else {
+      console.log(`No active client found for user ${userId} to disconnect`);
+    }
+    
+    // עדכון סטטוס ב-Firebase
+    await firebaseService.updateWhatsAppStatus(userId, 'disconnected');
+    console.log(`Status updated to 'disconnected' in Firebase for user ${userId}`);
+    
+    // ניקוי קובצי ה-session אם קיימים
+    try {
+      const userSessionDir = path.join(sessionDir, userId);
+      if (fs.existsSync(userSessionDir)) {
+        console.log(`Cleaning up session files for user ${userId} at ${userSessionDir}`);
+        fs.rmdirSync(userSessionDir, { recursive: true });
+        console.log(`Session directory removed for user ${userId}`);
+      }
+    } catch (error) {
+      console.error(`Error cleaning up session files for user ${userId}:`, error);
+      // ממשיכים בתהליך הניתוק גם במקרה של שגיאה
+    }
+    
+    return { 
+      success: true, 
+      message: 'WhatsApp disconnected successfully' 
+    };
+  } catch (error) {
+    console.error('Error during WhatsApp disconnection:', error);
+    // למרות השגיאה, ננסה לעדכן את הסטטוס ל-disconnected
+    try {
+      await firebaseService.updateWhatsAppStatus(userId, 'disconnected');
+    } catch (innerError) {
+      console.error('Error updating disconnected status to Firebase:', innerError);
+    }
+    
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+};
+
+/**
+ * ייבוא השיחות האחרונות מוואטסאפ ושמירתן ב-Firestore
+ * @param {string} userId - מזהה המשתמש
+ * @param {Object} options - אפשרויות נוספות
+ * @param {boolean} options.useRealData - האם להשתמש בנתונים אמיתיים גם במצב פיתוח
+ * @returns {Promise<Object>} - תוצאות הייבוא
+ */
+const importConversationsFromWhatsApp = async (userId, options = {}) => {
+  try {
+    const { useRealData = false } = options;
+    
+    // במצב פיתוח, ניתן להשתמש בנתוני דוגמה (אלא אם התבקשו נתונים אמיתיים)
+    if (process.env.NODE_ENV === 'development' && !useRealData) {
+      // בדיקה אם יש לקוח אמיתי - אם יש נשתמש בו, אחרת נחזיר נתוני דוגמה
+      const hasRealClient = clients.has(userId) && 
+        (clients.get(userId).status === 'CONNECTED' || clients.get(userId).status === 'connected');
+      
+      if (!hasRealClient) {
+        console.log(`[WhatsApp] Development mode: returning mock conversations for user ${userId}`);
+        
+        // יצירת נתוני שיחות לדוגמה
+        const mockConversations = [];
+        const numMockConversations = Math.floor(Math.random() * 5) + 3; // 3-7 שיחות
+        
+        for (let i = 0; i < numMockConversations; i++) {
+          mockConversations.push({
+            id: `mock-conv-${i}`,
+            phoneNumber: `+972-${Math.floor(Math.random() * 900000000) + 100000000}`,
+            name: `לקוח לדוגמה ${i + 1}`,
+            messagesCount: Math.floor(Math.random() * 15) + 5
+          });
+        }
+        
+        return {
+          success: true,
+          message: `יובאו ${mockConversations.length} שיחות לדוגמה בהצלחה (מצב פיתוח)`,
+          conversationsCount: mockConversations.length,
+          conversations: mockConversations,
+          isMock: true
+        };
+      }
+    }
+    
+    // בדיקה שהלקוח מחובר
+    if (!clients.has(userId)) {
+      return {
+        success: false,
+        message: 'לא נמצא חיבור וואטסאפ פעיל למשתמש'
+      };
+    }
+
+    const clientInfo = clients.get(userId);
+    console.log(`Client status for user ${userId}:`, clientInfo.status);
+    
+    // בדיקה משופרת שמתחשבת גם במקרה של 'CONNECTED' באותיות גדולות
+    if (clientInfo.status !== 'CONNECTED' && clientInfo.status !== 'connected') {
+      return {
+        success: false,
+        message: 'חיבור הוואטסאפ אינו פעיל. נא לסרוק קוד QR ולהתחבר'
+      };
+    }
+
+    const client = clientInfo.client;
+    console.log(`Importing conversations for user ${userId}`);
+
+    // ניסיון לקבל שיחות עם המתנה לטעינה
+    console.log(`Attempting to get all chats for user ${userId}...`);
+    
+    // המתנה קצרה לפני בקשת השיחות - לפעמים זה עוזר לוודא שכולן נטענו
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // קבלת כל השיחות
+    let chats = await client.getChats();
+    console.log(`Initially received ${chats.length} total chats from WhatsApp Web`);
+    
+    if (chats.length === 0) {
+      // ניסיון נוסף לקבל שיחות - לפעמים הניסיון הראשון נכשל
+      console.log(`No chats found on first attempt, waiting and trying again...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      chats = await client.getChats();
+      console.log(`Second attempt received ${chats.length} total chats`);
+    }
+    
+    // אם עדיין אין שיחות, ננסה לקבל את הצ'אטים הפרטיים ישירות
+    if (chats.length === 0) {
+      console.log(`Still no chats, attempting to fetch private chats directly...`);
+      try {
+        // ניסיון לקבל את כל השיחות הפרטיות - API לא מתועד אבל עשוי לעבוד
+        const privateChatsOnly = await client.getPrivateChats();
+        chats = privateChatsOnly || [];
+        console.log(`Direct private chats query returned ${chats.length} chats`);
+      } catch (error) {
+        console.log(`Error fetching private chats directly: ${error.message}`);
+      }
+    }
+
+    // ניקוי רשימת צ'אטים במקרה שיש צ'אטים שאינם תקינים
+    const validChats = chats.filter(chat => chat && chat.id && chat.id._serialized);
+    console.log(`Found ${validChats.length} valid chats out of ${chats.length} total`);
+    
+    // סינון שיחות פרטיות (לא קבוצות)
+    const nonGroupChats = validChats.filter(chat => !chat.isGroup);
+    console.log(`Found ${nonGroupChats.length} non-group chats`);
+    
+    // בדיקה נוספת למערך ההודעות - לא לסנן צ'אטים שאין להם הודעות כרגע
+    const privateChats = nonGroupChats;
+    
+    console.log(`Proceeding with ${privateChats.length} private chats`);
+
+    const importedConversations = [];
+    
+    // אם אין שיחות בכלל, נחזיר הודעה ספציפית
+    if (privateChats.length === 0) {
+      console.log(`No private chats found for user ${userId}. This could be due to:
+      1. WhatsApp Web connection is new and hasn't loaded chats yet
+      2. API limitation in accessing chat history
+      3. There are truly no private chats`);
+      
+      return {
+        success: false,
+        message: 'לא נמצאו שיחות וואטסאפ. ייתכן שההתחברות חדשה ועדיין לא נטענו שיחות, או שנתקלנו במגבלה של וואטסאפ ווב.',
+        conversationsCount: 0,
+        conversations: []
+      };
+    }
+    
+    // עיבוד כל שיחה
+    for (const chat of privateChats) {
+      try {
+        // לוג מידע מפורט על השיחה
+        console.log(`Processing chat:`, {
+          id: chat.id?._serialized || 'unknown',
+          isGroup: chat.isGroup || false,
+          hasMessages: chat.messages !== undefined,
+          messagesCount: chat.messages?.length || 0,
+          name: chat.name || 'unknown'
+        });
+        
+        const contact = await chat.getContact();
+        const phoneNumber = chat.id._serialized.split('@')[0];
+        const name = contact.name || contact.pushname || null;
+
+        console.log(`Processing chat with ${name || phoneNumber}, contact info:`, {
+          name: contact.name || 'none',
+          pushname: contact.pushname || 'none',
+          number: contact.number || 'none'
+        });
+        
+        // הודעות - נסה לקבל גם אם המערך לא קיים
+        let messages = [];
+        try {
+          if (chat.messages && chat.messages.length > 0) {
+            // במקרה שיש מערך הודעות
+            const maxMessages = Math.min(chat.messages.length, 100);
+            messages = await Promise.all(
+              // סינון ההודעות האחרונות
+              chat.messages
+                .slice(Math.max(0, chat.messages.length - maxMessages))
+                .filter(msg => msg && (msg.type === 'chat' || msg.type === 'text'))
+                .map(async (msg) => ({
+                  messageId: msg.id._serialized,
+                  body: msg.body,
+                  fromMe: msg.fromMe,
+                  timestamp: new Date(msg.timestamp * 1000)
+                }))
+            );
+          } else {
+            // ניסיון לקבל הודעות ישירות
+            console.log(`No messages array exists, trying to fetch messages directly...`);
+            try {
+              // ניסיון לקבל הודעות לשיחה זו - API לא מתועד
+              const chatMessages = await chat.fetchMessages({limit: 50});
+              if (chatMessages && chatMessages.length > 0) {
+                messages = chatMessages
+                  .filter(msg => msg && (msg.type === 'chat' || msg.type === 'text'))
+                  .map(msg => ({
+                    messageId: msg.id._serialized,
+                    body: msg.body,
+                    fromMe: msg.fromMe,
+                    timestamp: new Date(msg.timestamp * 1000)
+                  }));
+                console.log(`Fetched ${messages.length} messages directly for chat ${chat.id._serialized}`);
+              }
+            } catch (msgError) {
+              console.log(`Error fetching messages directly: ${msgError.message}`);
+            }
+          }
+        } catch (msgProcessError) {
+          console.error(`Error processing messages for chat ${chat.id._serialized}:`, msgProcessError);
+        }
+
+        // מיון ההודעות לפי זמן, מהישנות לחדשות
+        messages.sort((a, b) => a.timestamp - b.timestamp);
+
+        // עדכון מידע אחרון של השיחה
+        if (messages.length > 0) {
+          const lastMessage = messages[messages.length - 1];
+          await firebaseService.updateConversationLastMessage(
+            userId, 
+            conversation.id, 
+            lastMessage.body,
+            lastMessage.timestamp
+          );
+        }
+
+        try {
+          // יצירת/קבלת שיחה ב-Firestore
+          const conversation = await firebaseService.getOrCreateConversation(userId, chat.id._serialized, name);
+          
+          // לוג כמה הודעות עובדו
+          console.log(`Processed ${messages.length} messages for chat with ${name || phoneNumber}`);
+  
+          // מיון ההודעות לפי זמן, מהישנות לחדשות
+          messages.sort((a, b) => a.timestamp - b.timestamp);
+  
+          // שמירת הודעות ב-Firestore רק אם יש הודעות
+          if (messages.length > 0) {
+            // שמירת כל ההודעות ב-Firestore
+            for (const message of messages) {
+              await firebaseService.saveWhatsAppMessage(userId, conversation.id, message);
+            }
+            
+            // עדכון מידע אחרון של השיחה
+            const lastMessage = messages[messages.length - 1];
+            await firebaseService.updateConversationLastMessage(
+              userId, 
+              conversation.id, 
+              lastMessage.body,
+              lastMessage.timestamp
+            );
+          } else {
+            console.log(`No messages to save for chat ${chat.id._serialized} (${name || phoneNumber})`);
+            // נשמור את השיחה בכל מקרה, אך נציין שאין הודעות
+            await firebaseService.updateConversationLastMessage(
+              userId, 
+              conversation.id, 
+              "(אין הודעות זמינות)",
+              new Date()
+            );
+          }
+  
+          importedConversations.push({
+            id: conversation.id,
+            phoneNumber,
+            name,
+            messagesCount: messages.length
+          });
+        } catch (firestoreError) {
+          console.error(`Error getting or creating conversation:`, firestoreError);
+          
+          // במצב פיתוח, נוסיף שיחות מדומות במקום להיכשל לגמרי
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`Development mode: Adding mock conversation for ${phoneNumber} due to Firestore error`);
+            const mockConversationId = `mock-${phoneNumber}-${Date.now()}`;
+            importedConversations.push({
+              id: mockConversationId,
+              phoneNumber,
+              name,
+              messagesCount: messages.length,
+              isMock: true
+            });
+          }
+        }
+
+      } catch (error) {
+        console.error(`Error processing chat:`, error);
+      }
+    }
+
+    return {
+      success: true,
+      message: `יובאו ${importedConversations.length} שיחות מוואטסאפ בהצלחה`,
+      conversationsCount: importedConversations.length,
+      conversations: importedConversations
+    };
+  } catch (error) {
+    console.error(`Error importing conversations:`, error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+};

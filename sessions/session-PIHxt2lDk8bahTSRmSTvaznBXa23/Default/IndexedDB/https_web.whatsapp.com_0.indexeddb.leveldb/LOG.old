@@ -1,0 +1,25 @@
+2025/04/20-19:58:17.912 9f03 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/04/20-19:58:17.912 9f03 Recovering log #221
+2025/04/20-19:58:17.922 9f03 Reusing old log /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000221.log 
+2025/04/20-19:58:19.635 ba03 Level-0 table #232: started
+2025/04/20-19:58:19.645 ba03 Level-0 table #232: 134376 bytes OK
+2025/04/20-19:58:19.656 ba03 Delete type=0 #221
+2025/04/20-19:58:19.657 ba03 Manual compaction at level-0 from '\x00!\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00"\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/04/20-19:58:21.123 22403 Compacting 1@1 + 7@2 files
+2025/04/20-19:58:21.179 22403 Generated table #233@1: 47620 keys, 2212951 bytes
+2025/04/20-19:58:21.209 22403 Generated table #234@1: 3685 keys, 2153262 bytes
+2025/04/20-19:58:21.233 22403 Generated table #235@1: 2962 keys, 2153485 bytes
+2025/04/20-19:58:21.276 22403 Generated table #236@1: 24814 keys, 2234029 bytes
+2025/04/20-19:58:21.316 22403 Generated table #237@1: 34067 keys, 2188045 bytes
+2025/04/20-19:58:21.372 22403 Generated table #238@1: 91577 keys, 2240058 bytes
+2025/04/20-19:58:21.386 22403 Generated table #239@1: 14552 keys, 355472 bytes
+2025/04/20-19:58:21.386 22403 Compacted 1@1 + 7@2 files => 13537302 bytes
+2025/04/20-19:58:21.396 22403 compacted to: files[ 0 0 7 0 0 0 0 ]
+2025/04/20-19:58:21.396 22403 Delete type=2 #228
+2025/04/20-19:58:21.396 22403 Delete type=2 #229
+2025/04/20-19:58:21.396 22403 Delete type=2 #223
+2025/04/20-19:58:21.396 22403 Delete type=2 #224
+2025/04/20-19:58:21.396 22403 Delete type=2 #225
+2025/04/20-19:58:21.396 22403 Delete type=2 #227
+2025/04/20-19:58:21.396 22403 Delete type=2 #226
+2025/04/20-19:58:21.396 22403 Delete type=2 #232
