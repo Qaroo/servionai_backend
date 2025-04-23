@@ -12,7 +12,7 @@ try {
 
 // Routes
 const aiRouter = require('./routes/ai');
-const authRouter = require('./routes/auth');
+const authRouter = require('./middleware/auth');
 const uploadRouter = require('./routes/upload');
 const faqRouter = require('./routes/faq');
 const businessRouter = require('./routes/business');
