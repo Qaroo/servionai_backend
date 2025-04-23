@@ -1,2 +1,3 @@
-2025/04/20-23:26:23.463 b403 Creating DB /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb since it was missing.
-2025/04/20-23:26:23.484 b403 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/MANIFEST-000001
+2025/04/23-21:57:02.945 a203 Reusing MANIFEST /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/MANIFEST-000001
+2025/04/23-21:57:02.945 a203 Recovering log #3
+2025/04/23-21:57:02.946 a203 Reusing old log /Users/ilay/Desktop/servionai/server/sessions/session-PIHxt2lDk8bahTSRmSTvaznBXa23/Default/Local Storage/leveldb/000003.log 

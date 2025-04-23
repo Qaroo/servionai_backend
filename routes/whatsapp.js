@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { authMiddleware } = require('../middleware/auth');
 const whatsappService = require('../services/whatsapp');
 const mongodbService = require('../services/mongodb');
 
@@ -55,101 +56,6 @@ const cleanupOldRequests = () => {
       lastRequests.delete(userId);
     }
   });
-};
-
-// Middleware לאימות משתמש
-const authMiddleware = async (req, res, next) => {
-  try {
-    // בדיקת מצב פיתוח - תמיד נחשיב גישה מקומית כמצב פיתוח
-    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
-    const isDevelopment = process.env.NODE_ENV === 'development' || isLocalhost;
-    
-    // במצב פיתוח או גישה מקומית, אפשר גישה ללא אימות
-    if (isDevelopment) {
-      console.log(`[MOCK] Development mode detected: skipping authentication`);
-      
-      // אם יש userId בגוף הבקשה, השתמש בו
-      if (req.body && req.body.userId) {
-        req.userId = req.body.userId;
-      } else if (req.params && req.params.userId) {
-        req.userId = req.params.userId;
-      } else {
-        req.userId = 'PIHxt2lDk8bahTSRmSTvaznBXa23';
-      }
-      
-      console.log(`[MOCK] Using userId: ${req.userId}`);
-      return next();
-    }
-    
-    // בדיקה אם קיים token
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      console.log('Authorization header missing');
-      return res.status(401).json({
-        success: false,
-        message: 'Authorization token missing'
-      });
-    }
-    
-    // הוצאת הטוקן מה-Authorization header
-    let token = authHeader;
-    if (authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7, authHeader.length);
-    }
-    
-    // רישום לדיבוג (החלק הראשון של הטוקן בלבד)
-    const tokenPrefix = token.substring(0, 20) + '...';
-    console.log(`Attempting to verify token: ${tokenPrefix}`);
-    
-    // אימות ה-token עם MongoDB - יש לחכות לסיום ה-Promise
-    const decodedToken = await mongodbService.verifyIdToken(token);
-    
-    if (!decodedToken || !decodedToken.uid) {
-      console.log('Invalid token - no uid in decoded token');
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
-    }
-    
-    console.log(`Successfully authenticated user: ${decodedToken.uid}`);
-    
-    // בדיקה שמשתמש מורשה לגשת לנתונים של userID מסוים
-    if (req.params.userId && req.params.userId !== decodedToken.uid) {
-      console.log(`Forbidden: userId in params (${req.params.userId}) doesn't match authenticated user (${decodedToken.uid})`);
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to access this resource'
-      });
-    }
-    
-    // הוספת מזהה המשתמש לבקשה
-    req.userId = decodedToken.uid;
-    next();
-  } catch (error) {
-    console.error('Auth error:', error);
-    
-    // בדיקת מצב פיתוח - תמיד נחשיב גישה מקומית כמצב פיתוח
-    const isLocalhost = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
-    const isDevelopment = process.env.NODE_ENV === 'development' || isLocalhost;
-    
-    // בסביבת פיתוח - הרשה גישה למרות השגיאה
-    if (isDevelopment) {
-      console.log(`[MOCK] Authentication error in development mode - allowing access anyway`);
-      if (req.params && req.params.userId) {
-        req.userId = req.params.userId;
-      } else {
-        req.userId = 'PIHxt2lDk8bahTSRmSTvaznBXa23';
-      }
-      return next();
-    }
-    
-    res.status(401).json({
-      success: false,
-      message: 'אימות נכשל, אנא התחבר מחדש למערכת',
-      error: isDevelopment ? error.message : undefined
-    });
-  }
 };
 
 // נקודת קצה פשוטה לבדיקת זמינות השרת

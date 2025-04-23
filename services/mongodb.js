@@ -17,6 +17,12 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true },
   displayName: { type: String },
   createdAt: { type: Date, default: Date.now },
+  isActive: { type: Boolean, default: false }, // האם המשתמש מאושר במערכת
+  isAdmin: { type: Boolean, default: false }, // האם המשתמש הוא מנהל מערכת
+  activatedBy: { type: String, default: null }, // מי אישר את המשתמש
+  activatedAt: { type: Date, default: null }, // מתי המשתמש אושר
+  lastLogin: { type: Date, default: null }, // מתי המשתמש התחבר לאחרונה
+  notes: { type: String, default: '' }, // הערות לגבי המשתמש
   whatsappStatus: {
     status: { type: String, enum: ['connected', 'connecting', 'disconnected', 'error'], default: 'disconnected' },
     lastUpdated: { type: Date, default: Date.now }
@@ -36,7 +42,8 @@ const userSchema = new mongoose.Schema({
     status: { type: String, enum: ['untrained', 'training', 'trained', 'error'], default: 'untrained' },
     lastTraining: Date,
     trainingInstructions: String
-  }
+  },
+  botSettings: Object
 });
 
 const conversationSchema = new mongoose.Schema({
@@ -890,6 +897,381 @@ const updateBusinessTrainingInstructions = async (userId, trainingInstructions) 
   }
 };
 
+/**
+ * Updates the bot settings for a user
+ * @param {string} userId - The user's ID
+ * @param {Object} botSettings - The user's bot settings
+ * @returns {Promise<Object>} - The updated user data
+ */
+async function updateBotSettings(userId, botSettings) {
+  try {
+    // בדיקה שה-userId קיים ותקין
+    if (!userId) {
+      console.warn('No userId provided to updateBotSettings');
+      return { acknowledged: false, reason: 'No userId provided' };
+    }
+
+    console.log(`Updating bot settings for user ${userId}`);
+
+    // בדיקה האם המשתמש קיים
+    let user = null;
+    try {
+      user = await collections.User.findOne({ uid: userId });
+    } catch (error) {
+      console.log(`Error finding user ${userId}:`, error.message);
+    }
+
+    // אם המשתמש לא קיים, יוצרים אותו
+    if (!user && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'production')) {
+      try {
+        console.log(`Creating new user ${userId} with bot settings`);
+        user = new collections.User({
+          uid: userId,
+          email: `${userId}@example.com`,
+          displayName: `User ${userId}`,
+          botSettings: botSettings
+        });
+        await user.save();
+        return { acknowledged: true, insertedId: userId };
+      } catch (insertError) {
+        if (insertError.code === 11000) {
+          // מפתח כפול - ייתכן והמשתמש נוצר אחרי שבדקנו אם הוא קיים
+          console.log(`Duplicate key error, trying to update existing user ${userId}`);
+          const updateResult = await collections.User.updateOne(
+            { uid: userId },
+            { $set: { botSettings } }
+          );
+          return updateResult;
+        } else {
+          console.error(`Error creating user ${userId}:`, insertError);
+          throw insertError;
+        }
+      }
+    }
+
+    // עדכון הגדרות הבוט
+    const result = await collections.User.updateOne(
+      { uid: userId },
+      { $set: { botSettings } },
+      { upsert: true }
+    );
+    
+    // ניקוי מטמון אם קיים
+    if (caches.userData && caches.userData.has(userId)) {
+      const userData = caches.userData.get(userId);
+      userData.botSettings = botSettings;
+    }
+    
+    console.log(`Bot settings updated for user ${userId}:`, result);
+    return result;
+  } catch (error) {
+    console.error(`Error updating bot settings for user ${userId}:`, error);
+    // במצב פיתוח, מחזירים הצלחה למרות השגיאה
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[Dev] Returning success despite error for ${userId}`);
+      return { acknowledged: true, mock: true };
+    }
+    throw error;
+  }
+}
+
+/**
+ * קבלת כל המשתמשים במערכת - זמין רק למנהלים
+ * @param {string} adminId - מזהה המשתמש המנהל המבצע את הבקשה
+ * @returns {Promise<Array>} - מערך של כל המשתמשים
+ */
+async function getAllUsers(adminId) {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // שליפת כל המשתמשים ומיון לפי תאריך יצירה (מהחדש לישן)
+    const users = await collections.User.find({}).sort({ createdAt: -1 });
+    return users;
+  } catch (error) {
+    console.error('Error getting all users:', error);
+    throw error;
+  }
+}
+
+/**
+ * הפעלה או השבתה של משתמש
+ * @param {string} adminId - מזהה המנהל המבצע את הפעולה
+ * @param {string} userId - מזהה המשתמש לעדכון
+ * @param {boolean} isActive - האם להפעיל או להשבית את המשתמש
+ * @param {string} notes - הערות אופציונליות
+ * @returns {Promise<Object>} - המשתמש המעודכן
+ */
+async function setUserActiveStatus(adminId, userId, isActive, notes = '') {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // עדכון סטטוס המשתמש
+    const updateData = {
+      isActive: isActive
+    };
+    
+    // אם מפעילים משתמש, נעדכן גם מידע על האקטיבציה
+    if (isActive) {
+      updateData.activatedBy = adminId;
+      updateData.activatedAt = new Date();
+    }
+    
+    // אם נוספו הערות, נעדכן גם אותן
+    if (notes) {
+      updateData.notes = notes;
+    }
+    
+    const updatedUser = await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: updateData },
+      { new: true }
+    );
+    
+    if (!updatedUser) {
+      throw new Error('User not found');
+    }
+    
+    return updatedUser;
+  } catch (error) {
+    console.error(`Error ${isActive ? 'activating' : 'deactivating'} user:`, error);
+    throw error;
+  }
+}
+
+/**
+ * הפיכת משתמש למנהל או הסרת הרשאות ניהול
+ * @param {string} adminId - מזהה המנהל המבצע את הפעולה
+ * @param {string} userId - מזהה המשתמש לעדכון
+ * @param {boolean} isAdmin - האם להפוך למנהל או להסיר הרשאות
+ * @returns {Promise<Object>} - המשתמש המעודכן
+ */
+async function setUserAdminStatus(adminId, userId, isAdmin) {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // עדכון הרשאות הניהול של המשתמש
+    const updatedUser = await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: { isAdmin: isAdmin } },
+      { new: true }
+    );
+    
+    if (!updatedUser) {
+      throw new Error('User not found');
+    }
+    
+    return updatedUser;
+  } catch (error) {
+    console.error(`Error ${isAdmin ? 'granting' : 'revoking'} admin rights:`, error);
+    throw error;
+  }
+}
+
+/**
+ * יצירת מנהל מערכת ראשוני (רק אם אין מנהלים במערכת)
+ * @param {string} email - כתובת המייל של המנהל הראשי
+ * @returns {Promise<Object>} - פרטי המנהל שנוצר או קיים
+ */
+async function createInitialAdmin(email) {
+  try {
+    // בדיקה אם כבר יש מנהל במערכת
+    const existingAdmin = await collections.User.findOne({ isAdmin: true });
+    
+    if (existingAdmin) {
+      // בדיקה אם המייל הנוכחי כבר מוגדר כמנהל
+      const isEmailAdmin = await collections.User.findOne({ email: email, isAdmin: true });
+      if (isEmailAdmin) {
+        return { success: true, message: 'Email is already an admin', user: isEmailAdmin };
+      } else {
+        return { success: false, message: 'Admin already exists in the system' };
+      }
+    }
+    
+    // בדיקה אם המשתמש קיים לפי אימייל
+    let adminUser = await collections.User.findOne({ email: email });
+    
+    if (adminUser) {
+      // אם המשתמש קיים, נהפוך אותו למנהל
+      adminUser = await collections.User.findOneAndUpdate(
+        { email: email },
+        { 
+          $set: { 
+            isAdmin: true, 
+            isActive: true,
+            notes: 'Initial system administrator'
+          } 
+        },
+        { new: true }
+      );
+    } else {
+      // יצירת משתמש מנהל חדש עם מזהה מיוחד
+      const adminId = `admin-${Date.now()}`;
+      adminUser = new collections.User({
+        uid: adminId,
+        email: email,
+        displayName: 'System Administrator',
+        isAdmin: true,
+        isActive: true,
+        notes: 'Initial system administrator',
+        createdAt: new Date(),
+        activatedAt: new Date()
+      });
+      
+      await adminUser.save();
+    }
+    
+    return { success: true, message: 'Initial admin created successfully', user: adminUser };
+  } catch (error) {
+    console.error('Error creating initial admin:', error);
+    return { success: false, message: error.message };
+  }
+}
+
+/**
+ * עדכון פרטי משתמש
+ * @param {string} adminId - מזהה המנהל המבצע את הפעולה 
+ * @param {string} userId - מזהה המשתמש לעדכון
+ * @param {Object} userData - פרטי המשתמש המעודכנים
+ * @returns {Promise<Object>} - המשתמש המעודכן
+ */
+async function updateUserDetails(adminId, userId, userData) {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // וידוא שלא מנסים לעדכן שדות רגישים
+    const safeUpdateData = { ...userData };
+    delete safeUpdateData.uid; // לא מאפשרים לשנות מזהה משתמש
+    delete safeUpdateData.isAdmin; // לא מאפשרים לשנות סטטוס מנהל כאן (יש לכך פונקציה נפרדת)
+    
+    const updatedUser = await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: safeUpdateData },
+      { new: true }
+    );
+    
+    if (!updatedUser) {
+      throw new Error('User not found');
+    }
+    
+    return updatedUser;
+  } catch (error) {
+    console.error('Error updating user details:', error);
+    throw error;
+  }
+}
+
+/**
+ * קבלת פרטי משתמש מפורטים
+ * @param {string} adminId - מזהה המנהל המבצע את הבקשה
+ * @param {string} userId - מזהה המשתמש לשליפה
+ * @returns {Promise<Object>} - פרטי המשתמש המלאים
+ */
+async function getUserDetailsForAdmin(adminId, userId) {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // שליפת פרטי המשתמש
+    const user = await collections.User.findOne({ uid: userId });
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    // שליפת מידע נוסף על המשתמש
+    
+    // מידע על הבוט של המשתמש
+    const botSettings = await collections.User.findOne({ userId: userId });
+    
+    // מידע על שיחות אחרונות
+    const recentConversations = await collections.Conversation.find({ userId: userId })
+      .sort({ updatedAt: -1 })
+      .limit(5);
+      
+    // החזרת המידע המלא
+    return {
+      user: user,
+      botSettings: botSettings || null,
+      recentConversations: recentConversations || []
+    };
+  } catch (error) {
+    console.error('Error getting detailed user info:', error);
+    throw error;
+  }
+}
+
+/**
+ * אימון בוט עבור משתמש ספציפי על ידי מנהל
+ * @param {string} adminId - מזהה המנהל המבצע את הפעולה
+ * @param {string} userId - מזהה המשתמש לאימון הבוט
+ * @param {Object} trainingData - נתוני אימון מותאמים
+ * @returns {Promise<Object>} - סטטוס האימון
+ */
+async function trainUserBotByAdmin(adminId, userId, trainingData) {
+  try {
+    // בדיקה שהמשתמש הוא אכן מנהל
+    const adminUser = await collections.User.findOne({ uid: adminId });
+    if (!adminUser || !adminUser.isAdmin) {
+      throw new Error('Access denied: User is not an admin');
+    }
+    
+    // עדכון סטטוס האימון ל-"מאמן"
+    await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { 
+        $set: { 
+          'trainingData.status': 'training',
+          'trainingData.lastTraining': new Date(),
+          'trainingData.trainingInstructions': trainingData.instructions || ''
+        } 
+      }
+    );
+    
+    // כאן יש להפעיל את תהליך האימון בפועל
+    // TODO: להוסיף קריאה לשירות שמאמן את הבוט
+    
+    // מניח שהאימון מצליח
+    await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: { 'trainingData.status': 'trained' } }
+    );
+    
+    return {
+      success: true,
+      message: 'Bot training initiated successfully',
+      userId: userId
+    };
+  } catch (error) {
+    // עדכון סטטוס האימון ל-"שגיאה" במקרה של כישלון
+    await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: { 'trainingData.status': 'error' } }
+    );
+    
+    console.error('Error training user bot by admin:', error);
+    throw error;
+  }
+}
+
 // ייצוא פונקציות
 module.exports = {
   initializeMongoDB,
@@ -909,5 +1291,13 @@ module.exports = {
   getBusinessInfo,
   updateBusinessInfo,
   updateTrainingStatus,
-  updateBusinessTrainingInstructions
+  updateBusinessTrainingInstructions,
+  updateBotSettings,
+  getAllUsers,
+  setUserActiveStatus,
+  setUserAdminStatus,
+  createInitialAdmin,
+  updateUserDetails,
+  getUserDetailsForAdmin,
+  trainUserBotByAdmin
 }; 

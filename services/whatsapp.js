@@ -330,6 +330,13 @@ const handleIncomingMessage = async (userId, message) => {
         phoneNumber
       });
       
+      // בדיקה האם יש להגיב למספר טלפון זה לפי הגדרות הבוט
+      const shouldRespond = await shouldRespondToPhone(userId, phoneNumber);
+      if (!shouldRespond) {
+        console.log(`Skipping AI response for ${phoneNumber} based on bot settings`);
+        return;
+      }
+      
       // קבלת נתוני אימון הסוכן
       let agentData = null;
       try {
@@ -1183,6 +1190,59 @@ const getConversationMessages = async (userId, conversationId) => {
   return await mongodbService.getConversationMessages(userId, conversationId);
 };
 
+/**
+ * בודק האם לענות להודעה בהתאם להגדרות הבוט
+ * @param {string} userId - מזהה המשתמש
+ * @param {string} phoneNumber - מספר הטלפון של השולח
+ * @returns {Promise<boolean>} - האם לענות להודעה
+ */
+const shouldRespondToPhone = async (userId, phoneNumber) => {
+  try {
+    // במצב פיתוח תמיד נענה
+    if (process.env.NODE_ENV === 'development') {
+      return true;
+    }
+
+    // קבלת הגדרות הבוט
+    const userData = await mongodbService.getUserData(userId);
+    if (!userData || !userData.botSettings) {
+      // אם אין הגדרות בוט, נענה כברירת מחדל
+      return true;
+    }
+
+    const botSettings = userData.botSettings;
+    
+    // ניקוי מספר הטלפון להשוואה (הסרת תחיליות ותווים מיוחדים)
+    const cleanPhoneNumber = phoneNumber.replace(/\D/g, '').replace(/^0/, '');
+    const lastDigits = cleanPhoneNumber.slice(-9); // נלקח 9 ספרות אחרונות לצורך השוואה
+    
+    // בדיקה אם המספר נמצא ברשימת המורשים
+    const isInAllowedList = botSettings.allowedContacts?.some(contact => {
+      const contactCleanNumber = contact.phone.replace(/\D/g, '').replace(/^0/, '');
+      return contactCleanNumber.includes(lastDigits) || lastDigits.includes(contactCleanNumber);
+    }) || false;
+    
+    // בדיקה אם המספר נמצא ברשימת החסומים
+    const isInBlockedList = botSettings.blockedContacts?.some(contact => {
+      const contactCleanNumber = contact.phone.replace(/\D/g, '').replace(/^0/, '');
+      return contactCleanNumber.includes(lastDigits) || lastDigits.includes(contactCleanNumber);
+    }) || false;
+    
+    // החלטה בהתאם למצב רשימה לבנה/שחורה
+    if (botSettings.contactsListMode === 'whitelist') {
+      // במצב רשימה לבנה, צריך להיות ברשימת המורשים
+      return isInAllowedList;
+    } else {
+      // במצב רשימה שחורה, צריך לא להיות ברשימת החסומים
+      return !isInBlockedList;
+    }
+  } catch (error) {
+    console.error('Error checking if should respond to phone:', error);
+    // במקרה של שגיאה, החזר true כברירת מחדל
+    return true;
+  }
+};
+
 // ייצוא הפונקציות
 module.exports = {
   initializeWhatsApp,
@@ -1196,6 +1256,7 @@ module.exports = {
   getImportStatus,
   getConversations,
   getConversationMessages,
+  shouldRespondToPhone,
   clients,
   activeImports
 };

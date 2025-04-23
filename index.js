@@ -27,6 +27,7 @@ console.log(`Force development mode: ${process.env.FORCE_DEV_MODE === 'true' ? '
 const whatsappRoutes = require('./routes/whatsapp');
 const aiRoutes = require('./routes/ai');
 const naamaRoutes = require('./routes/naama');
+const botRoutes = require('./routes/bot');
 
 // Services
 // const { initializeFirebase } = require('./services/firebase');
@@ -115,6 +116,7 @@ initializeWhatsApp(io);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/ai', naamaRoutes);
+app.use('/api/bot', botRoutes);
 
 // הוספת שירות סטטי לתיקיית הקבצים הזמניים (כולל קבצי אודיו)
 const tempDir = path.join(__dirname, '..', 'temp');

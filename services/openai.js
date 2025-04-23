@@ -115,7 +115,7 @@ const getAIResponse = async (prompt, context = [], businessInfo = null) => {
     }
     
     // לוג של המידע העסקי שמועבר ל-AI
-    console.log('Business data being sent to OpenAI:', JSON.stringify(businessData, null, 2));
+    //console.log('Business data being sent to OpenAI:', JSON.stringify(businessData, null, 2));
     
     // בניית הוראות מערכת בהתאם לפרטי העסק
     let systemPrompt = 'אתה סוכן וירטואלי של עסק ישראלי. אתה עונה בעברית בלבד ומסייע ללקוחות בצורה מקצועית ואדיבה.';
@@ -150,7 +150,7 @@ const getAIResponse = async (prompt, context = [], businessInfo = null) => {
     }
 
     // לוג של ה-system prompt
-    console.log('System prompt being sent to OpenAI:', systemPrompt);
+    //console.log('System prompt being sent to OpenAI:', systemPrompt);
 
     // מבנה ההיסטוריה שנשלחת ל-OpenAI
     const messages = [
