@@ -106,9 +106,26 @@ const initializeMongoDB = async () => {
 async function verifyIdToken(token) {
   try {
     // וידוא שהטוקן הוא מחרוזת ולא Promise
-    if (!token || typeof token !== 'string') {
-      console.error(`Invalid token type: ${typeof token}`);
-      throw new Error('Invalid token format - must be a string');
+    if (!token) {
+      console.error(`Token is empty or undefined`);
+      throw new Error('Invalid token - token is empty or undefined');
+    }
+    
+    if (typeof token !== 'string') {
+      if (token instanceof Promise) {
+        console.error(`Token is a Promise, not a string. Attempting to resolve it.`);
+        try {
+          // נסה לחכות לסיום ה-Promise ולקבל את הטוקן האמיתי
+          token = await token;
+          console.log('Successfully resolved token Promise');
+        } catch (promiseError) {
+          console.error('Failed to resolve token Promise:', promiseError);
+          throw new Error('Invalid token - received a Promise that could not be resolved');
+        }
+      } else {
+        console.error(`Invalid token type: ${typeof token}`);
+        throw new Error('Invalid token format - must be a string');
+      }
     }
 
     // במצב פיתוח, מחזיר משתמש מדומה
