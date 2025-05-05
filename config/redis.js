@@ -1,20 +1,10 @@
 const Redis = require('ioredis');
 
 const redisConfig = {
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: process.env.REDIS_PORT || 6379,
-  password: process.env.REDIS_PASSWORD,
-  maxRetriesPerRequest: 3,
-  retryStrategy(times) {
-    const delay = Math.min(times * 50, 2000);
-    return delay;
-  }
+  url: process.env.REDIS_URL || 'redis://default:n2GofQre4falRtw1q7d6Bpzevq6zEZIz@redis-15130.crce198.eu-central-1-3.ec2.redns.redis-cloud.com:15130',
 };
 
-// אם יש URL מלא של Redis, השתמש בו
-if (process.env.REDIS_URL) {
-  redisConfig.url = process.env.REDIS_URL;
-}
+
 
 const redisClient = new Redis(redisConfig);
 
