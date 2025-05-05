@@ -1,9 +1,9 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode_terminal = require('qrcode-terminal');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { redisClient, setLastSender, setLastTimestamp, shouldBotRespond } = require('../config/redis');
 
 const mongodbService = require('./mongodb');
 const openaiService = require('./openai');
@@ -17,11 +17,19 @@ const lastRequests = new Map();
 // מיפוי לשמירת מידע על ייבואים פעילים לפי משתמש
 const activeImports = new Map();
 
+let client = null;
+let sessions = new Map();
+let io = null;
+
 /**
  * אתחול מערכת ה-WhatsApp והרשמה לאירועים
- * @param {Object} io - מופע Socket.IO server
+ * @param {Object} socketIO - מופע Socket.IO server
+ * @returns {Promise<void>}
  */
-const initializeWhatsApp = (io) => {
+const initializeWhatsApp = async (socketIO) => {
+  return new Promise((resolve) => {
+    io = socketIO;
+    
   // טיפול באירועי Socket.IO
   io.on('connection', (socket) => {
     console.log('New client connected to WhatsApp service:', socket.id);
@@ -33,7 +41,48 @@ const initializeWhatsApp = (io) => {
   });
 
   console.log('WhatsApp service initialized');
+    resolve();
+  });
 };
+
+async function getOrCreateSession(userId) {
+  if (!sessions.has(userId)) {
+    const user = await mongodbService.getUserByWhatsAppId(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    sessions.set(userId, {
+      userId: user._id,
+      lastActive: Date.now()
+    });
+  }
+  return sessions.get(userId);
+}
+
+async function handleMessage(message, session) {
+  try {
+    const chatHistory = await mongodbService.getChatHistory(session.userId, 5); // מקבל 5 ההודעות האחרונות
+    const response = await openaiService.createChatCompletion({
+      model: "gpt-3.5-turbo",
+      messages: [
+        ...chatHistory.map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        })),
+        { role: 'user', content: message }
+      ],
+      max_tokens: 150
+    });
+    
+    await mongodbService.saveChatMessage(session.userId, message, 'user');
+    await mongodbService.saveChatMessage(session.userId, response.data.choices[0].message.content, 'assistant');
+    
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    console.error('Error handling message:', error);
+    throw error;
+  }
+}
 
 /**
  * יצירת לקוח WhatsApp חדש למשתמש
@@ -82,9 +131,9 @@ const createClient = async (userId) => {
       console.log(`Using existing session directory: ${sessionDir}`);
     }
     
-    // תצורה של puppeteer לעבודה אופטימלית - headless: "new" הוא המצב המודרני המומלץ
+    // תצורה של puppeteer לעבודה אופטימלית
     const puppeteerConfig = {
-      headless: "new",
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -92,19 +141,9 @@ const createClient = async (userId) => {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--single-process', // משפר את היציבות במערכות מסוימות
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--disable-features=site-per-process', // יכול להקטין צריכת זיכרון
-        '--disable-translate',
-        '--disable-sync',
-        '--metrics-recording-only',
-        '--disable-browser-side-navigation'
+        '--disable-gpu'
       ],
-      ignoreHTTPSErrors: true,
-      defaultViewport: { width: 1280, height: 800 } // גודל חלון גדול יותר לנוחות
+      ignoreHTTPSErrors: true
     };
 
     // יצירת לקוח WhatsApp חדש
@@ -113,12 +152,7 @@ const createClient = async (userId) => {
         clientId: userId,
         dataPath: process.env.SESSIONS_DIR || './sessions'
       }),
-      puppeteer: puppeteerConfig,
-      webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2332.15.html'
-      },
-      webVersion: '2.2332.15' // ספק גרסה ספציפית לשיפור היציבות
+      puppeteer: puppeteerConfig
     });
     
     // אובייקט לשמירת מידע על החיבור
@@ -135,56 +169,23 @@ const createClient = async (userId) => {
     
     // אירוע קבלת קוד QR
     client.on('qr', async (qr) => {
-      // הצגת קוד QR במסוף
-      console.log('======================================');
-      console.log(`QR Code received for user: ${userId}`);
-      console.log('======================================');
-      qrcode_terminal.generate(qr, { small: true });
-      
-      // יצירת QR code כתמונה
       try {
-        // שמירת קוד ה-QR המקורי 
-        clientInfo.rawQrCode = qr;
-        
-        // יצירת תמונת QR באיכות גבוהה
-        // במקום לשמור את כל הקוד כ-data URL, נשמור רק את הערך עצמו
-        // זה יקטין את גודל הקוד שצריך להיות מוצג
-        if (qr.length > 1000 && process.env.NODE_ENV === 'development') {
-          // במצב פיתוח נשתמש בקוד קצר יותר
-          console.log('QR code is too long, generating a simpler one for development');
-          const qrDataURL = await qrcode.toDataURL('https://servionai.com/connect-whatsapp', {
-            errorCorrectionLevel: 'H',
-            margin: 4,
-            scale: 16,
-            width: 1000,
-            color: {
-              dark: '#000000',
-              light: '#FFFFFF'
-            }
-          });
-          clientInfo.qrCode = qrDataURL;
-        } else {
-          // יצירת תמונת QR באיכות גבוהה
+        console.log('QR Code received for user:', userId);
+      
+        // יצירת תמונת QR פשוטה יותר
           const qrDataURL = await qrcode.toDataURL(qr, {
-            errorCorrectionLevel: 'H',
-            margin: 4,
-            scale: 16,
-            width: 1000,
-            color: {
-              dark: '#000000',
-              light: '#FFFFFF'
-            }
+          errorCorrectionLevel: 'L',
+          margin: 1,
+          scale: 4
           });
-          clientInfo.qrCode = qrDataURL;
-        }
         
+          clientInfo.qrCode = qrDataURL;
         clientInfo.status = 'INITIALIZING';
         
         // עדכון סטטוס החיבור ב-MongoDB
-        mongodbService.updateWhatsAppStatus(userId, 'connecting');
-      } catch (qrError) {
-        console.error('Error generating QR image:', qrError);
-        // במקרה של שגיאה, נשתמש בקוד המקורי
+        await mongodbService.updateWhatsAppStatus(userId, 'connecting');
+      } catch (error) {
+        console.error('Error generating QR image:', error);
         clientInfo.qrCode = qr;
         clientInfo.status = 'INITIALIZING';
       }
@@ -336,6 +337,13 @@ const handleIncomingMessage = async (userId, message) => {
         console.log(`Skipping AI response for ${phoneNumber} based on bot settings`);
         return;
       }
+
+      // בדיקה האם זה חלק משיחה אנושית פעילה
+      const isHumanConversation = await isActiveHumanConversation(userId, conversation.id, phoneNumber);
+      if (isHumanConversation) {
+        console.log(`Skipping AI response for ${phoneNumber} because there's an active human conversation`);
+        return;
+      }
       
       // קבלת נתוני אימון הסוכן
       let agentData = null;
@@ -373,8 +381,22 @@ const handleIncomingMessage = async (userId, message) => {
       
       let aiResponse = null;
       try {
-        aiResponse = await openaiService.getAIResponse(message.body, [], agentData);
-        console.log(`Received AI response for user ${userId}`);
+        // שימוש במנגנון החדש לניהול שיחה
+        const result = await openaiService.handleSmartConversation(
+          message.body,
+          userId,
+          agentData.businessInfo
+        );
+        
+        aiResponse = result.response;
+        
+        // לוג של השימוש בטוקנים
+        console.log(`AI Response for user ${userId}:
+          Model: ${result.model}
+          Prompt Tokens: ${result.usage.prompt_tokens}
+          Completion Tokens: ${result.usage.completion_tokens}
+          Total Tokens: ${result.usage.total_tokens}
+        `);
       } catch (aiError) {
         console.error(`Error getting AI response for user ${userId}:`, aiError.message);
         return;
@@ -414,6 +436,67 @@ const handleIncomingMessage = async (userId, message) => {
         }
       } catch (error) {
     console.error('Error handling incoming message:', error);
+  }
+};
+
+/**
+ * בדיקה האם מתנהלת שיחה אנושית פעילה
+ * שיחה תיחשב כאנושית אם:
+ * 1. המשתמש שלח הודעה ללקוח בטווח של 5 דקות האחרונות, או
+ * 2. נשלחו לפחות 2 הודעות אנושיות ברצף על ידי המשתמש
+ * @param {string} userId - מזהה המשתמש
+ * @param {string} conversationId - מזהה השיחה
+ * @param {string} phoneNumber - מספר הטלפון של הלקוח
+ * @returns {Promise<boolean>} - האם מתנהלת שיחה אנושית פעילה
+ */
+const isActiveHumanConversation = async (userId, conversationId, phoneNumber) => {
+  try {
+    // קבלת ההודעות האחרונות בשיחה
+    const messages = await mongodbService.getConversationMessages(userId, conversationId, 10);
+    
+    if (!messages || messages.length === 0) {
+      return false;
+    }
+    
+    // מיון ההודעות לפי זמן, מהחדש לישן
+    const sortedMessages = [...messages].sort((a, b) => 
+      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+    
+    // בדיקה 1: האם נשלחה הודעה אנושית (לא AI) מהמשתמש ב-5 דקות האחרונות
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const recentHumanMessages = sortedMessages.filter(msg => 
+      msg.fromMe && 
+      !msg.isAI && 
+      new Date(msg.timestamp) > fiveMinutesAgo
+    );
+    
+    if (recentHumanMessages.length > 0) {
+      console.log(`Found ${recentHumanMessages.length} recent human messages within last 5 minutes`);
+      return true;
+    }
+    
+    // בדיקה 2: האם נשלחו לפחות 2 הודעות אנושיות ברצף
+    let consecutiveHumanMessages = 0;
+    
+    for (const msg of sortedMessages) {
+      if (msg.fromMe && !msg.isAI) {
+        consecutiveHumanMessages++;
+        if (consecutiveHumanMessages >= 2) {
+          console.log('Found at least 2 consecutive human messages');
+          return true;
+        }
+      } else {
+        // נפסק הרצף של הודעות אנושיות
+        break;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error(`Error checking for active human conversation: ${error.message}`);
+    // במקרה של שגיאה, נחזיר שאין שיחה אנושית פעילה
+    return false;
   }
 };
 
@@ -639,21 +722,14 @@ const sendMessage = async (userId, chatId, message) => {
     }
     
     // קבלת פרטי השיחה מ-MongoDB
-    const conversationDoc = await mongodbService.db()
-      .collection('users')
-      .doc(userId)
-      .collection('conversations')
-      .doc(chatId)
-      .get();
+    const conversation = await mongodbService.getConversation(userId, chatId);
     
-    if (!conversationDoc.exists) {
+    if (!conversation) {
       return { 
         success: false, 
         error: 'Conversation not found' 
       };
     }
-    
-    const conversation = conversationDoc.data();
     
     // שליחת ההודעה ל-WhatsApp
     const result = await clientInfo.client.sendMessage(conversation.phoneNumber, message);
@@ -918,7 +994,7 @@ const importConversationsFromWhatsApp = async (userId, options = {}) => {
       console.log(`Second attempt received ${chats.length} total chats`);
     }
     
-    // אם עדיין אין שיחות, ננסה לקבל את הצ'אטים הפרטיים ישירות
+    // אם עדיין אין שיחות, ננסה לקבל את הצ'אטים הפרטיות ישירות
     if (chats.length === 0) {
       console.log(`Still no chats, attempting to fetch private chats directly...`);
       try {
@@ -1258,5 +1334,7 @@ module.exports = {
   getConversationMessages,
   shouldRespondToPhone,
   clients,
-  activeImports
+  activeImports,
+  getOrCreateSession,
+  handleMessage
 };

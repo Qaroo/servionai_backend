@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { authMiddleware } = require('../middleware/auth');
+const authMiddleware = require('../middleware/auth');
 const whatsappService = require('../services/whatsapp');
+const openaiService = require('../services/openai');
 const mongodbService = require('../services/mongodb');
 
 // מאגר לניהול בקשות אחרונות של כל משתמש
@@ -275,9 +276,21 @@ router.get('/conversations', authMiddleware, async (req, res) => {
     // בסביבת ייצור או כאשר ביקשו שיחות אמיתיות, שליפת השיחות מפיירבייס
     const conversations = await whatsappService.getConversations(userId);
     
+    // ודא שכל ה-lastMessageTime הם תאריכים תקינים
+    const processedConversations = conversations.map(conv => {
+      // אם אין תאריך או שהתאריך לא תקין, הגדר תאריך נוכחי
+      if (!conv.lastMessageTime || isNaN(new Date(conv.lastMessageTime).getTime())) {
+        return {
+          ...conv,
+          lastMessageTime: new Date()
+        };
+      }
+      return conv;
+    });
+    
     res.json({
       success: true,
-      conversations,
+      conversations: processedConversations,
       isMock: false
     });
   } catch (error) {
@@ -484,6 +497,137 @@ router.get('/conversations/:chatId/messages', authMiddleware, async (req, res) =
       success: false,
       message: 'שגיאה בשליפת הודעות השיחה'
     });
+  }
+});
+
+// קבלת שיחות המשתמש
+router.get('/conversations/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const conversations = await mongodbService.getConversations(userId);
+    
+    // עיבוד השיחות לפורמט המתאים למסך
+    const processedConversations = conversations.map(conv => {
+      // קביעת זמן הודעה אחרונה תקין
+      let lastMessageTime;
+      if (conv.messages && conv.messages.length > 0 && conv.messages[conv.messages.length - 1]?.timestamp) {
+        lastMessageTime = new Date(conv.messages[conv.messages.length - 1].timestamp);
+        // אם התאריך לא תקין, השתמש בתאריך נוכחי
+        if (isNaN(lastMessageTime.getTime())) {
+          lastMessageTime = new Date();
+        }
+      } else {
+        lastMessageTime = new Date();
+      }
+
+      return {
+        id: conv.id,
+        contactName: conv.contactName,
+        phoneNumber: conv.phoneNumber,
+        lastMessage: conv.messages[conv.messages.length - 1]?.body || '',
+        lastMessageTime: lastMessageTime,
+        summary: conv.summary || null
+      };
+    });
+    
+    res.json(processedConversations);
+  } catch (error) {
+    console.error('Error getting conversations:', error);
+    res.status(500).json({ error: 'Failed to get conversations' });
+  }
+});
+
+// סיכום שיחה באמצעות AI
+router.post('/summarize/:userId/:conversationId', async (req, res) => {
+  try {
+    const { userId, conversationId } = req.params;
+    
+    // קבלת השיחה ממסד הנתונים
+    const conversation = await mongodbService.getConversation(userId, conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    
+    // יצירת סיכום באמצעות OpenAI
+    const messages = conversation.messages.map(msg => ({
+      role: msg.fromMe ? 'assistant' : 'user',
+      content: msg.body
+    }));
+    
+    const summary = await openaiService.generateConversationSummary(messages);
+    
+    // שמירת הסיכום במסד הנתונים
+    await mongodbService.updateConversationSummary(userId, conversationId, summary);
+    
+    res.json({ summary });
+  } catch (error) {
+    console.error('Error summarizing conversation:', error);
+    res.status(500).json({ error: 'Failed to summarize conversation' });
+  }
+});
+
+/**
+ * POST /api/whatsapp/send-mass-message
+ * Send a message to multiple contacts
+ */
+router.post('/send-mass-message', authMiddleware, async (req, res) => {
+  try {
+    const { message, contacts } = req.body;
+    const userId = req.user.uid;
+
+    if (!message || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ error: 'Invalid request data' });
+    }
+
+    // שליחת ההודעות
+    const results = await Promise.allSettled(
+      contacts.map(async (contact) => {
+        try {
+          // פורמט מספר הטלפון
+          let phoneNumber = contact.phone;
+          // הסרת כל התווים שאינם ספרות
+          phoneNumber = phoneNumber.replace(/\D/g, '');
+          // הוספת 972 אם חסר קוד מדינה
+          if (!phoneNumber.startsWith('972')) {
+            phoneNumber = '972' + phoneNumber;
+          }
+          // הוספת + בתחילת המספר
+          phoneNumber = '+' + phoneNumber;
+
+          // יצירת שיחה חדשה או קבלת שיחה קיימת
+          const conversation = await mongodbService.getOrCreateConversation(
+            userId,
+            phoneNumber,
+            contact.name || `לקוח ${phoneNumber.substring(phoneNumber.length - 4)}`
+          );
+
+          // שליחת ההודעה
+          const result = await whatsappService.sendMessage(userId, conversation.id, message);
+          
+          if (result.success) {
+            return { phone: phoneNumber, status: 'success' };
+          } else {
+            throw new Error(result.error || 'Failed to send message');
+          }
+        } catch (error) {
+          console.error(`Error sending message to ${contact.phone}:`, error);
+          return { phone: contact.phone, status: 'error', error: error.message };
+        }
+      })
+    );
+
+    // סיכום התוצאות
+    const summary = {
+      total: contacts.length,
+      success: results.filter(r => r.status === 'fulfilled' && r.value.status === 'success').length,
+      failed: results.filter(r => r.status === 'rejected' || r.value.status === 'error').length,
+      details: results.map(r => r.status === 'fulfilled' ? r.value : { phone: r.reason.phone, status: 'error', error: r.reason.message })
+    };
+
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('Error sending mass message:', error);
+    res.status(500).json({ error: 'Failed to send mass message' });
   }
 });
 

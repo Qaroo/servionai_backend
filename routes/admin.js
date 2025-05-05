@@ -6,7 +6,7 @@ const auth = require('../middleware/auth');
 // ניתוב מאובטח שדורש הרשאות מנהל
 const requireAdmin = async (req, res, next) => {
   try {
-    const user = await mongodb.getUserData(req.user.uid);
+    const user = await mongodb.getUserData(req.userId);
     
     if (!user || !user.isAdmin) {
       return res.status(403).json({ 
@@ -28,7 +28,7 @@ const requireAdmin = async (req, res, next) => {
 // קבל את כל המשתמשים במערכת
 router.get('/users', auth, requireAdmin, async (req, res) => {
   try {
-    const users = await mongodb.getAllUsers(req.user.uid);
+    const users = await mongodb.getAllUsers(req.userId);
     return res.json({ success: true, users });
   } catch (error) {
     console.error('Error getting all users:', error);
@@ -43,7 +43,7 @@ router.get('/users', auth, requireAdmin, async (req, res) => {
 // קבל פרטי משתמש מפורטים
 router.get('/users/:userId', auth, requireAdmin, async (req, res) => {
   try {
-    const userDetails = await mongodb.getUserDetailsForAdmin(req.user.uid, req.params.userId);
+    const userDetails = await mongodb.getUserDetailsForAdmin(req.userId, req.params.userId);
     return res.json({ success: true, userDetails });
   } catch (error) {
     console.error('Error getting user details:', error);
@@ -60,11 +60,17 @@ router.put('/users/:userId/activate', auth, requireAdmin, async (req, res) => {
   try {
     const { isActive, notes } = req.body;
     const updatedUser = await mongodb.setUserActiveStatus(
-      req.user.uid, 
+      req.userId, 
       req.params.userId, 
       isActive, 
       notes
     );
+    
+    // אם המשתמש הופעל, יש לוודא שגם העדכון במערכת יתבצע כראוי
+    // כך שהמשתמש יוכל להשתמש בWhatsApp לאחר האקטיבציה
+    if (isActive) {
+      console.log(`User ${req.params.userId} activated by admin ${req.userId}. Updating user status.`);
+    }
     
     return res.json({ 
       success: true, 
@@ -86,7 +92,7 @@ router.put('/users/:userId/admin', auth, requireAdmin, async (req, res) => {
   try {
     const { isAdmin } = req.body;
     const updatedUser = await mongodb.setUserAdminStatus(
-      req.user.uid, 
+      req.userId, 
       req.params.userId, 
       isAdmin
     );
@@ -110,7 +116,7 @@ router.put('/users/:userId/admin', auth, requireAdmin, async (req, res) => {
 router.put('/users/:userId', auth, requireAdmin, async (req, res) => {
   try {
     const updatedUser = await mongodb.updateUserDetails(
-      req.user.uid, 
+      req.userId, 
       req.params.userId, 
       req.body
     );
@@ -134,7 +140,7 @@ router.put('/users/:userId', auth, requireAdmin, async (req, res) => {
 router.post('/users/:userId/train-bot', auth, requireAdmin, async (req, res) => {
   try {
     const result = await mongodb.trainUserBotByAdmin(
-      req.user.uid, 
+      req.userId, 
       req.params.userId, 
       req.body
     );
@@ -197,6 +203,71 @@ router.put('/settings', auth, requireAdmin, async (req, res) => {
       success: false, 
       message: 'Failed to update system settings',
       error: error.message 
+    });
+  }
+});
+
+// יצירת משתמש חדש (זמין רק למנהלים)
+router.post('/users/create', auth, requireAdmin, async (req, res) => {
+  try {
+    const {
+      email,
+      displayName,
+      isAdmin = false,
+      isActive = true,
+      notes = '',
+      businessInfo = {}
+    } = req.body;
+    
+    // בדיקות תקינות
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+    
+    // בדיקה האם המשתמש כבר קיים במערכת
+    const existingUser = await mongodb.findUserByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email already exists'
+      });
+    }
+    
+    // יצירת מזהה ייחודי למשתמש החדש
+    const userId = `user-${Date.now()}`;
+    
+    // יצירת המשתמש במערכת
+    const newUser = {
+      uid: userId,
+      email,
+      displayName: displayName || email.split('@')[0],
+      isAdmin,
+      isActive,
+      notes,
+      createdAt: new Date(),
+      activatedAt: isActive ? new Date() : null,
+      activatedBy: req.userId,
+      businessInfo: businessInfo
+    };
+    
+    // שמירת המשתמש החדש
+    const user = new mongodb.collections.User(newUser);
+    await user.save();
+    
+    return res.json({
+      success: true,
+      message: 'User created successfully',
+      user: user.toObject()
+    });
+  } catch (error) {
+    console.error('Error creating new user:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create user',
+      error: error.message
     });
   }
 });

@@ -8,26 +8,44 @@ const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
+const app = require('./app');
+const { connectDB } = require('./config/db');
+const { redisClient } = require('./config/redis');
+const { PORT = 5001 } = process.env;
 
 // אם לא הוגדר סביבה, נקבע לפיתוח כברירת מחדל
 if (!process.env.NODE_ENV) {
   console.log('NODE_ENV not set, defaulting to development mode');
   process.env.NODE_ENV = 'development';
-  process.env.FORCE_DEV_MODE = 'true';
-
-console.log(`Starting server in ${process.env.NODE_ENV} mode`);
-console.log(`Force development mode: ${process.env.FORCE_DEV_MODE === 'true' ? 'Yes' : 'No'}`);
-
-}else{
-  console.log('NODE_ENV set to:', process.env.NODE_ENV);
 }
 
+console.log(`Starting server in ${process.env.NODE_ENV} mode`);
+
+// התחברות ל-Redis
+const initRedis = async () => {
+  try {
+    await redisClient.ping();
+    console.log('Redis connection test successful');
+  } catch (error) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('Redis connection failed in production mode:', error);
+      process.exit(1);
+    } else {
+      console.warn('Redis connection failed in development mode - continuing without Redis');
+    }
+  }
+};
 
 // Routes
 const whatsappRoutes = require('./routes/whatsapp');
 const aiRoutes = require('./routes/ai');
 const naamaRoutes = require('./routes/naama');
 const botRoutes = require('./routes/bot');
+const adminRoutes = require('./routes/admin');
+const usersRoutes = require('./routes/users');
+const authRoutes = require('./routes/auth');
+const calendarRoutes = require('./routes/calendar');
+const massMessageRoutes = require('./routes/mass-message');
 
 // Services
 // const { initializeFirebase } = require('./services/firebase');
@@ -35,7 +53,6 @@ const { initializeMongoDB } = require('./services/mongodb');
 const { initializeWhatsApp } = require('./services/whatsapp');
 
 // Initialize Express app
-const app = express();
 const server = http.createServer(app);
 
 // Create Socket.IO server
@@ -82,41 +99,42 @@ if (process.env.NODE_ENV === 'production') {
   console.log('Rate limiting disabled for development environment');
 }
 
-// Initialize MongoDB instead of Firebase
-initializeMongoDB()
-  .then(success => {
-    if (success) {
-      console.log('MongoDB connected successfully');
-    } else {
-      console.error('Failed to connect to MongoDB');
-      
-      // במצב פיתוח אפשר להמשיך גם ללא חיבור למסד נתונים
-      if (process.env.NODE_ENV === 'development') {
-        console.log('Development mode: Continuing without MongoDB connection');
-      } else {
-        process.exit(1);
-      }
-    }
-  })
-  .catch(err => {
-    console.error('MongoDB initialization error:', err);
-    
-    // במצב פיתוח אפשר להמשיך גם ללא חיבור למסד נתונים
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Development mode: Continuing without MongoDB connection');
-    } else {
-      process.exit(1);
-    }
-  });
+const startServer = async () => {
+  try {
+    // התחברות ל-MongoDB ואתחול המודלים
+    await initializeMongoDB();
+    console.log('MongoDB models initialized successfully');
 
-// Initialize WhatsApp
-initializeWhatsApp(io);
+    // התחברות ל-Redis
+    await initRedis();
+    console.log('Redis connection test successful');
+
+    // אתחול שירות WhatsApp
+    await initializeWhatsApp(io);
+    console.log('WhatsApp service initialized');
+
+    // הפעלת השרת
+    server.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 // Routes
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/ai', naamaRoutes);
 app.use('/api/bot', botRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/calendar', calendarRoutes);
+app.use('/api/mass-message', massMessageRoutes);
 
 // הוספת שירות סטטי לתיקיית הקבצים הזמניים (כולל קבצי אודיו)
 const tempDir = path.join(__dirname, '..', 'temp');
@@ -151,20 +169,6 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
-});
-
-// Start server
-const PORT = process.env.PORT || 5001;
-server.listen(PORT, () => {
-  console.log(`
-  ╔═══════════════════════════════════════════════════════════╗
-  ║                                                           ║
-  ║   ServionAI Server                                        ║
-  ║   Running on port ${PORT}                                    ║
-  ║   Environment: ${process.env.NODE_ENV || 'development'}                                ║
-  ║                                                           ║
-  ╚═══════════════════════════════════════════════════════════╝
-  `);
 });
 
 // Handle unhandled promise rejections

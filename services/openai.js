@@ -1,4 +1,5 @@
 const OpenAI = require('openai');
+const { redisClient } = require('../config/redis');
 
 // יצירת מופע של OpenAI API
 let openai;
@@ -400,6 +401,113 @@ const textToSpeech = async (text) => {
   }
 };
 
+async function generateChatResponse(messages) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: messages,
+      temperature: 0.7,
+      max_tokens: 150
+    });
+    return response.choices[0].message.content;
+  } catch (error) {
+    console.error('Error generating chat response:', error);
+    throw error;
+  }
+}
+
+// פונקציה ליצירת סיכום שיחה
+const generateConversationSummary = async (messages, businessInfo) => {
+  try {
+    const summaryPrompt = `
+    סיכום השיחה הקודמת:
+    ${messages.map(msg => `${msg.role === 'user' ? 'לקוח' : 'עסק'}: ${msg.content}`).join('\n')}
+    
+    אנא סוכם את השיחה בקצרה (עד 3 משפטים) תוך התמקדות בנושאים העיקריים והשאלות הפתוחות.
+    `;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'אתה מערכת AI שתפקידה לסכם שיחות בצורה תמציתית ומדויקת.' },
+        { role: 'user', content: summaryPrompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 150
+    });
+
+    return response.choices[0].message.content.trim();
+  } catch (error) {
+    console.error('Error generating conversation summary:', error);
+    return 'לא ניתן ליצור סיכום כרגע.';
+  }
+};
+
+// פונקציה לקביעת המודל המתאים
+const determineModel = (message, context) => {
+  // בדיקה אם יש צורך ביכולות מתקדמות
+  const requiresAdvancedCapabilities = 
+    message.includes('תמונה') || 
+    message.includes('קוד') || 
+    message.includes('תכנות') ||
+    message.length > 500 ||
+    context.length > 1000;
+
+  return requiresAdvancedCapabilities ? 'gpt-4' : 'gpt-3.5-turbo';
+};
+
+// פונקציה לניהול שיחה חכמה
+const handleSmartConversation = async (message, userId, businessInfo) => {
+  try {
+    // קבלת סיכום השיחה הקודמת מ-Redis
+    const previousSummary = await redisClient.get(`conversationSummary:${userId}`);
+    
+    // קביעת המודל המתאים
+    const model = determineModel(message, previousSummary || '');
+    
+    // בניית הודעות לשליחה
+    const messages = [
+      { role: 'system', content: `אתה סוכן וירטואלי של העסק "${businessInfo.name}". 
+      ${businessInfo.description ? `תיאור העסק: ${businessInfo.description}` : ''}
+      ${businessInfo.services ? `שירותים: ${businessInfo.services}` : ''}
+      ${businessInfo.hours ? `שעות פעילות: ${businessInfo.hours}` : ''}
+      ${businessInfo.contact ? `פרטי קשר: ${businessInfo.contact}` : ''}
+      
+      ענה בצורה מקצועית, אדיבה ומותאמת לעסק.` },
+    ];
+
+    // הוספת סיכום השיחה הקודמת אם קיים
+    if (previousSummary) {
+      messages.push({ role: 'system', content: `סיכום השיחה הקודמת: ${previousSummary}` });
+    }
+
+    // הוספת ההודעה הנוכחית
+    messages.push({ role: 'user', content: message });
+
+    // שליחת הבקשה ל-OpenAI
+    const response = await openai.chat.completions.create({
+      model,
+      messages,
+      temperature: 0.7,
+      max_tokens: 500
+    });
+
+    // שמירת סיכום השיחה הנוכחית
+    const newSummary = await generateConversationSummary(messages, businessInfo);
+    await redisClient.set(`conversationSummary:${userId}`, newSummary);
+
+    // החזרת התשובה ומידע על השימוש בטוקנים
+    return {
+      response: response.choices[0].message.content.trim(),
+      usage: response.usage,
+      model
+    };
+  } catch (error) {
+    console.error('Error in smart conversation handling:', error);
+    throw error;
+  }
+};
+
 // ייצוא הפונקציות
 module.exports = {
   getAIResponse,
@@ -407,5 +515,7 @@ module.exports = {
   trainAgentWithConversations,
   getChatCompletionRaw,
   transcribeSpeech,
-  textToSpeech
+  textToSpeech,
+  generateChatResponse,
+  handleSmartConversation
 }; 

@@ -1,8 +1,14 @@
 const mongoose = require('mongoose');
+const { Schema } = mongoose;
+const { redisClient } = require('../config/redis');
 const { v4: uuidv4 } = require('uuid');
+const { User, BusinessInfo } = require('../models');
 
 // מבנה נתונים לקשירת MongoDB Collections
-const collections = {};
+const collections = {
+  User: User,
+  BusinessInfo: BusinessInfo
+};
 
 // מבנה נתונים למטמון של מידע בזיכרון
 const caches = {
@@ -12,40 +18,6 @@ const caches = {
 };
 
 // סכמות MongoDB
-const userSchema = new mongoose.Schema({
-  uid: { type: String, required: true, unique: true },
-  email: { type: String, required: true },
-  displayName: { type: String },
-  createdAt: { type: Date, default: Date.now },
-  isActive: { type: Boolean, default: false }, // האם המשתמש מאושר במערכת
-  isAdmin: { type: Boolean, default: false }, // האם המשתמש הוא מנהל מערכת
-  activatedBy: { type: String, default: null }, // מי אישר את המשתמש
-  activatedAt: { type: Date, default: null }, // מתי המשתמש אושר
-  lastLogin: { type: Date, default: null }, // מתי המשתמש התחבר לאחרונה
-  notes: { type: String, default: '' }, // הערות לגבי המשתמש
-  whatsappStatus: {
-    status: { type: String, enum: ['connected', 'connecting', 'disconnected', 'error'], default: 'disconnected' },
-    lastUpdated: { type: Date, default: Date.now }
-  },
-  businessInfo: {
-    name: String,
-    description: String,
-    industry: String,
-    services: String,
-    hours: String,
-    contact: String,
-    address: String,
-    additionalInfo: String,
-    website: String
-  },
-  trainingData: {
-    status: { type: String, enum: ['untrained', 'training', 'trained', 'error'], default: 'untrained' },
-    lastTraining: Date,
-    trainingInstructions: String
-  },
-  botSettings: Object
-});
-
 const conversationSchema = new mongoose.Schema({
   userId: { type: String, required: true, index: true },
   id: { type: String, required: true, unique: true },
@@ -81,20 +53,27 @@ const whatsappSessionSchema = new mongoose.Schema({
 const initializeMongoDB = async () => {
   try {
     // חיבור ל-MongoDB
-    await mongoose.connect('mongodb+srv://seasonscrm:pfyc6DKNINPGK2a2@servior.3ixxc01.mongodb.net/?retryWrites=true&w=majority&appName=servior');
+    const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://seasonscrm:pfyc6DKNINPGK2a2@servior.3ixxc01.mongodb.net/?retryWrites=true&w=majority&appName=servior';
 
-    console.log('MongoDB initialized successfully');
+    await mongoose.connect(mongoUri);
+
+    console.log('MongoDB connected successfully');
 
     // יצירת מודלים
-    collections.User = mongoose.model('User', userSchema);
     collections.Conversation = mongoose.model('Conversation', conversationSchema);
     collections.Message = mongoose.model('Message', messageSchema);
     collections.WhatsappSession = mongoose.model('WhatsappSession', whatsappSessionSchema);
 
+    // וידוא שהמודלים אותחלו
+    if (!collections.Conversation || !collections.Message || !collections.WhatsappSession) {
+      throw new Error('Failed to initialize MongoDB models');
+    }
+
+    console.log('MongoDB models initialized successfully');
     return true;
   } catch (error) {
     console.error('Error initializing MongoDB:', error);
-    return false;
+    throw error;
   }
 };
 
@@ -123,8 +102,8 @@ async function verifyIdToken(token) {
           throw new Error('Invalid token - received a Promise that could not be resolved');
         }
       } else {
-        console.error(`Invalid token type: ${typeof token}`);
-        throw new Error('Invalid token format - must be a string');
+      console.error(`Invalid token type: ${typeof token}`);
+      throw new Error('Invalid token format - must be a string');
       }
     }
 
@@ -210,118 +189,16 @@ function atob(base64) {
   return Buffer.from(base64, 'base64').toString('binary');
 }
 
-// קבלת מידע משתמש
-const getUserData = async (uid) => {
+// עדכון פרטי המשתמש הנוכחי
+const getUserData = async (userId) => {
   try {
-    // בדיקה אם המידע קיים במטמון
-    if (caches.userData.has(uid)) {
-      return caches.userData.get(uid);
-    }
-
-    // נסה למצוא את המשתמש ב-MongoDB
-    let user = await collections.User.findOne({ uid });
-
-    // אם המשתמש לא קיים, צור אותו
+    const user = await User.findOne({ uid: userId });
     if (!user) {
-      if (process.env.NODE_ENV === 'development') {
-        // במצב פיתוח, צור משתמש חדש עם מידע לדוגמה
-        
-        // מידע עסקי מותאם לפי המשתמש
-        let businessInfo = {
-          name: "סרביון AI",
-          description: "פתרונות בינה מלאכותית לעסקים",
-          industry: "טכנולוגיה",
-          services: "צ'אטבוטים, אוטומציה, אינטגרציה עם וואטסאפ",
-          hours: "א-ה 9:00-18:00",
-          contact: "info@servionai.com, 052-555-1234",
-          address: "תל אביב",
-          website: "https://www.servionai.com",
-          additionalInfo: "אנחנו עוזרים לעסקים להטמיע פתרונות AI"
-        };
-        
-        // מידע מותאם עבור משתמש אמיתי
-        if (uid === 'real-user-123') {
-          businessInfo = {
-            name: "סרביון AI - משתמש אמיתי",
-            description: "פתרונות בינה מלאכותית מתקדמים",
-            industry: "טכנולוגיה וחדשנות",
-            services: "צ'אטבוטים, אוטומציה, אינטגרציה עם וואטסאפ, פתרונות קוליים",
-            hours: "א-ה 9:00-20:00, ו 9:00-14:00",
-            contact: "real@servionai.com, 052-555-9876",
-            address: "תל אביב, רוטשילד 123",
-            website: "https://www.servionai.com/real",
-            additionalInfo: "מובילים בתחום הבינה המלאכותית עם התמחות בפתרונות מותאמים אישית"
-          };
+      return null;
         }
-        
-        user = new collections.User({
-          uid,
-          email: uid === 'real-user-123' ? 'realuser@example.com' : `${uid}@example.com`,
-          displayName: uid === 'real-user-123' ? 'משתמש אמיתי' : `User ${uid}`,
-          whatsappStatus: { status: 'disconnected', lastUpdated: new Date() },
-          businessInfo: businessInfo,
-          trainingData: {
-            status: "trained",
-            lastTraining: new Date()
-          }
-        });
-        await user.save();
-      } else {
-        throw new Error(`User ${uid} not found`);
-      }
-    }
-
-    // שמירה במטמון
-    const userData = user.toObject();
-    caches.userData.set(uid, userData);
-    
-    return userData;
+    return user;
   } catch (error) {
-    console.error(`Error getting user data for ${uid}:`, error);
-    
-    // במצב פיתוח, החזר מידע מדומה
-    if (process.env.NODE_ENV === 'development') {
-      // מידע מותאם עבור משתמשים שונים
-      let mockBusinessInfo = {
-        name: "סרביון AI",
-        description: "פתרונות בינה מלאכותית לעסקים",
-        industry: "טכנולוגיה",
-        services: "צ'אטבוטים, אוטומציה, אינטגרציה עם וואטסאפ",
-        hours: "א-ה 9:00-18:00",
-        contact: "info@servionai.com, 052-555-1234",
-        address: "תל אביב",
-        website: "https://www.servionai.com",
-        additionalInfo: "אנחנו עוזרים לעסקים להטמיע פתרונות AI"
-      };
-      
-      if (uid === 'real-user-123') {
-        mockBusinessInfo = {
-          name: "סרביון AI - משתמש אמיתי",
-          description: "פתרונות בינה מלאכותית מתקדמים",
-          industry: "טכנולוגיה וחדשנות",
-          services: "צ'אטבוטים, אוטומציה, אינטגרציה עם וואטסאפ, פתרונות קוליים",
-          hours: "א-ה 9:00-20:00, ו 9:00-14:00",
-          contact: "real@servionai.com, 052-555-9876",
-          address: "תל אביב, רוטשילד 123",
-          website: "https://www.servionai.com/real",
-          additionalInfo: "מובילים בתחום הבינה המלאכותית עם התמחות בפתרונות מותאמים אישית"
-        };
-      }
-      
-      const mockUser = {
-        uid,
-        email: uid === 'real-user-123' ? 'realuser@example.com' : `${uid}@example.com`,
-        displayName: uid === 'real-user-123' ? 'משתמש אמיתי' : `User ${uid}`,
-        whatsappStatus: { status: 'disconnected', lastUpdated: new Date() },
-        businessInfo: mockBusinessInfo,
-        trainingData: {
-          status: "trained",
-          lastTraining: new Date()
-        }
-      };
-      return mockUser;
-    }
-    
+    console.error('Error getting user data:', error);
     throw error;
   }
 };
@@ -345,30 +222,59 @@ const saveWhatsAppSession = async (userId, sessionData) => {
 const getWhatsAppSession = async (userId) => {
   try {
     const session = await collections.WhatsappSession.findOne({ userId });
-    return session ? session.toObject() : null;
+    return session;
   } catch (error) {
     console.error(`Error getting WhatsApp session for ${userId}:`, error);
     return null;
   }
 };
 
+// מחיקת סשן WhatsApp של משתמש
+const removeWhatsAppSession = async (userId) => {
+  try {
+    await collections.WhatsappSession.deleteOne({ userId });
+    console.log(`Successfully removed WhatsApp session for user ${userId}`);
+    return true;
+  } catch (error) {
+    console.error(`Error removing WhatsApp session for ${userId}:`, error);
+    return false;
+  }
+};
+
 // עדכון סטטוס חיבור וואטסאפ
 const updateWhatsAppStatus = async (userId, status) => {
   try {
-    // עדכון במסד הנתונים
+    if (!['connected', 'connecting', 'disconnected', 'error'].includes(status)) {
+      throw new Error(`Invalid WhatsApp status: ${status}`);
+    }
+
+    // עדכון בדאטאבייס
     await collections.User.updateOne(
       { uid: userId },
-      { 'whatsappStatus.status': status, 'whatsappStatus.lastUpdated': new Date() },
-      { upsert: true }
+      { 
+        $set: { 
+          'whatsappStatus.status': status,
+          'whatsappStatus.lastUpdated': new Date()
+        } 
+      }
     );
     
-    // עדכון במטמון
+    // אם הסטטוס הוא "מנותק", מחק את הסשן
+    if (status === 'disconnected') {
+      await removeWhatsAppSession(userId);
+    }
+
+    // ניקוי המטמון
     if (caches.userData.has(userId)) {
       const userData = caches.userData.get(userId);
-      userData.whatsappStatus = { status, lastUpdated: new Date() };
+      userData.whatsappStatus = {
+        status,
+        lastUpdated: new Date()
+      };
+      caches.userData.set(userId, userData);
     }
     
-    // שמירה במטמון נפרד לסטטוס וואטסאפ
+    // עדכון מצב הסטטוס במטמון
     caches.whatsappStatus.set(userId, {
       status,
       lastUpdated: new Date()
@@ -377,16 +283,6 @@ const updateWhatsAppStatus = async (userId, status) => {
     return true;
   } catch (error) {
     console.error(`Error updating WhatsApp status for ${userId}:`, error);
-    
-    // במצב פיתוח, שמור במטמון בלבד
-    if (process.env.NODE_ENV === 'development') {
-      caches.whatsappStatus.set(userId, {
-        status,
-        lastUpdated: new Date()
-      });
-      return true;
-    }
-    
     return false;
   }
 };
@@ -727,60 +623,24 @@ const getBusinessInfo = async (userId) => {
 };
 
 // עדכון פרטי עסק
-const updateBusinessInfo = async (userId, businessInfo) => {
+const updateBusinessInfo = async (userId, businessData) => {
   try {
-    console.log("Starting to update " + userId + " Data with:", businessInfo);
+    let businessInfo = await BusinessInfo.findOne({ userId });
     
-    // וידוא שמידע העסק לא ריק
     if (!businessInfo) {
-      console.error(`Business info is empty or invalid for ${userId}`);
-      return false;
-    }
-    
-    console.log("Business info is not empty");
-    
-    // בדיקה אם המשתמש קיים במערכת
-    let user = await collections.User.findOne({ uid: userId });
-    
-    if (!user) {
-      console.log(`User ${userId} not found, creating new user with business info`);
-      
-      // יצירת משתמש חדש אם לא קיים
-      user = new collections.User({
-        uid: userId,
-        email: `${userId}@example.com`, // אימייל זמני
-        displayName: `User ${userId.substring(0, 8)}`,
-        businessInfo: businessInfo,
-        trainingData: {
-          status: 'untrained',
-          lastTraining: new Date()
-        },
-        createdAt: new Date()
+      businessInfo = new BusinessInfo({
+        userId,
+        ...businessData
       });
-      
-      await user.save();
-      console.log(`New user ${userId} created successfully with business info`);
     } else {
-      console.log(`User ${userId} exists, updating business info`);
-      
-      // עדכון במסד הנתונים - שימוש ב-$set כדי לעדכן רק את שדה businessInfo
-      const updateResult = await collections.User.updateOne(
-        { uid: userId },
-        { $set: { businessInfo: businessInfo } }
-      );
-      
-      console.log("Business info updated for " + userId, updateResult);
+      Object.assign(businessInfo, businessData);
     }
     
-    // ניקוי המטמון
-    caches.businessData.delete(userId);
-    console.log("Business data cache deleted for " + userId);
-    
-    return true;
+    await businessInfo.save();
+    return businessInfo;
   } catch (error) {
-    console.error(`Error updating business info for ${userId}:`, error);
-    console.log("Error updating business info for " + userId + ": " + error);
-    return false;
+    console.error('Error updating business info:', error);
+    throw error;
   }
 };
 
@@ -1289,6 +1149,214 @@ async function trainUserBotByAdmin(adminId, userId, trainingData) {
   }
 }
 
+/**
+ * מציאת משתמש לפי אימייל
+ * @param {string} email - אימייל לחיפוש
+ * @returns {Promise<Object|null>} - אובייקט המשתמש או null אם לא נמצא
+ */
+async function findUserByEmail(email) {
+  try {
+    // חיפוש המשתמש לפי אימייל
+    const user = await collections.User.findOne({ email });
+    
+    if (!user) {
+      return null;
+    }
+    
+    return user.toObject();
+  } catch (error) {
+    console.error(`Error finding user by email ${email}:`, error);
+    return null;
+  }
+}
+
+/**
+ * הגדרת משתמש כמנהל מערכת
+ * @param {string} userId - מזהה המשתמש
+ * @param {string} notes - הערות לגבי המשתמש
+ * @returns {Promise<Object|null>} - אובייקט המשתמש המעודכן או null אם נכשל
+ */
+async function setUserAsAdmin(userId, notes = '') {
+  try {
+    // עדכון המשתמש עם הרשאות מנהל
+    const updatedUser = await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { 
+        $set: { 
+          isAdmin: true, 
+          isActive: true,
+          activatedAt: new Date(),
+          notes: notes
+        } 
+      },
+      { new: true }
+    );
+    
+    if (!updatedUser) {
+      console.error(`User ${userId} not found when setting as admin`);
+      return null;
+    }
+    
+    // ניקוי המטמון
+    if (caches.userData.has(userId)) {
+      caches.userData.delete(userId);
+    }
+    
+    return updatedUser.toObject();
+  } catch (error) {
+    console.error(`Error setting user ${userId} as admin:`, error);
+    return null;
+  }
+}
+
+/**
+ * יצירת משתמש מנהל חדש
+ * @param {string} email - אימייל המשתמש החדש
+ * @param {string} adminId - מזהה ייחודי למנהל (אופציונלי)
+ * @returns {Promise<Object|null>} - אובייקט המשתמש החדש או null אם נכשל
+ */
+async function createNewAdmin(email, adminId = null) {
+  try {
+    // יצירת מזהה ייחודי אם לא סופק
+    if (!adminId) {
+      adminId = `admin-${Date.now()}`;
+    }
+    
+    // יצירת משתמש מנהל חדש
+    const newAdmin = new collections.User({
+      uid: adminId,
+      email: email,
+      displayName: 'System Administrator',
+      isAdmin: true,
+      isActive: true,
+      notes: 'Initial system administrator',
+      createdAt: new Date(),
+      activatedAt: new Date()
+    });
+    
+    await newAdmin.save();
+    return newAdmin.toObject();
+  } catch (error) {
+    console.error(`Error creating new admin with email ${email}:`, error);
+    return null;
+  }
+}
+
+async function getChatHistory(userId, limit = 5) {
+  try {
+    const messages = await db.collection('chat_messages')
+      .find({ userId })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+    return messages.reverse();
+  } catch (error) {
+    console.error('Error getting chat history:', error);
+    throw error;
+  }
+}
+
+async function saveChatMessage(userId, content, sender) {
+  try {
+    await db.collection('chat_messages').insertOne({
+      userId,
+      content,
+      sender,
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('Error saving chat message:', error);
+    throw error;
+  }
+}
+
+/**
+ * עדכון פרטי משתמש
+ * @param {string} userId - מזהה המשתמש
+ * @param {Object} profileData - נתוני הפרופיל לעדכון
+ * @returns {Promise<Object>} - המשתמש המעודכן
+ */
+async function updateUserProfile(userId, profileData) {
+  try {
+    // בדיקה שהמשתמש קיים
+    const user = await collections.User.findOne({ uid: userId });
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // עדכון השדות המותרים
+    const allowedFields = ['displayName', 'phone', 'email'];
+    const updateData = {};
+    
+    for (const field of allowedFields) {
+      if (profileData[field] !== undefined) {
+        updateData[field] = profileData[field];
+      }
+    }
+
+    // עדכון המשתמש
+    const updatedUser = await collections.User.findOneAndUpdate(
+      { uid: userId },
+      { $set: updateData },
+      { new: true }
+    );
+
+    return updatedUser;
+  } catch (error) {
+    console.error(`Error updating user profile for ${userId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * וידוא הרשאות מנהל
+ * @param {string} userId - מזהה המשתמש לבדיקה
+ * @returns {Promise<boolean>} - האם למשתמש יש הרשאות מנהל
+ */
+async function ensureAdminPrivileges(userId) {
+  try {
+    // בדיקה שהמשתמש קיים ושהוא מנהל
+    const user = await collections.User.findOne({ uid: userId });
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    if (!user.isAdmin) {
+      throw new Error('User does not have admin privileges');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`Error checking admin privileges for ${userId}:`, error);
+    throw error;
+  }
+}
+
+// ייבוא אנשי קשר
+const importContacts = async (contacts) => {
+  try {
+    // יצירת מודל דינמי לאנשי קשר
+    const Contact = mongoose.model('Contact', new mongoose.Schema({
+      userId: { type: String, required: true, index: true },
+      phone: { type: String, required: true },
+      name: String,
+      notes: String,
+      type: { type: String, enum: ['allowed', 'blocked'], required: true },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date, default: Date.now }
+    }));
+
+    // שמירת כל אנשי הקשר
+    await Contact.insertMany(contacts, { ordered: false });
+    
+    return { success: true, count: contacts.length };
+  } catch (error) {
+    console.error('Error importing contacts:', error);
+    throw error;
+  }
+};
+
 // ייצוא פונקציות
 module.exports = {
   initializeMongoDB,
@@ -1296,6 +1364,7 @@ module.exports = {
   getUserData,
   saveWhatsAppSession,
   getWhatsAppSession,
+  removeWhatsAppSession,
   updateWhatsAppStatus,
   saveWhatsAppMessage,
   updateConversationLastMessage,
@@ -1316,5 +1385,14 @@ module.exports = {
   createInitialAdmin,
   updateUserDetails,
   getUserDetailsForAdmin,
-  trainUserBotByAdmin
+  trainUserBotByAdmin,
+  updateUserProfile,
+  ensureAdminPrivileges,
+  findUserByEmail,
+  setUserAsAdmin,
+  createNewAdmin,
+  collections,
+  getChatHistory,
+  saveChatMessage,
+  importContacts
 }; 

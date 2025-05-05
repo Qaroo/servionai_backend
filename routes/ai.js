@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const openaiService = require('../services/openai');
 const mongodbService = require('../services/mongodb');
-const { authMiddleware } = require('../middleware/auth');
+const authMiddleware = require('../middleware/auth');
 
 // נתיב פשוט לבדיקת חיים של השרת
 router.get('/ping', (req, res) => {

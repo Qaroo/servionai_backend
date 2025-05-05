@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { authMiddleware } = require('../middleware/auth');
-const { getUserData, updateBotSettings } = require('../services/mongodb');
+const { getUserData, updateBotSettings, importContacts } = require('../services/mongodb');
+const User = require('../models/User');
 
 /**
  * GET /api/bot/settings
@@ -97,8 +98,58 @@ router.post('/settings', authMiddleware, async (req, res) => {
     if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'production') {
       res.json({ success: true, message: 'Bot settings virtually updated (ignoring errors in development/production mode)' });
     } else {
-      res.status(500).json({ success: false, error: 'Failed to update bot settings' });
+    res.status(500).json({ success: false, error: 'Failed to update bot settings' });
     }
+  }
+});
+
+// ייבוא אנשי קשר מקובץ אקסל
+router.post('/contacts/import', authMiddleware, async (req, res) => {
+  try {
+    const { contacts = [], listType } = req.body;
+    const userId = req.user.uid;
+
+    if (!Array.isArray(contacts)) {
+      return res.status(400).json({ error: 'Contacts must be an array' });
+    }
+
+    if (!['whitelist', 'blacklist'].includes(listType)) {
+      return res.status(400).json({ error: 'Invalid list type' });
+    }
+
+    const user = await User.findOne({ uid: userId });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Initialize arrays if they don't exist
+    if (!user.botSettings) {
+      user.botSettings = {
+        allowedContacts: [],
+        blockedContacts: []
+      };
+    }
+
+    if (!user.botSettings.allowedContacts) {
+      user.botSettings.allowedContacts = [];
+    }
+
+    if (!user.botSettings.blockedContacts) {
+      user.botSettings.blockedContacts = [];
+    }
+
+    // Add contacts to the appropriate list
+    if (listType === 'whitelist') {
+      user.botSettings.allowedContacts = [...new Set([...user.botSettings.allowedContacts, ...contacts])];
+    } else {
+      user.botSettings.blockedContacts = [...new Set([...user.botSettings.blockedContacts, ...contacts])];
+    }
+
+    await user.save();
+    res.json({ success: true, message: 'Contacts imported successfully' });
+  } catch (error) {
+    console.error('Error importing contacts:', error);
+    res.status(500).json({ error: 'Failed to import contacts' });
   }
 });
 

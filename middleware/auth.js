@@ -1,110 +1,84 @@
-const mongodbService = require('../services/mongodb');
+const { getUserData, updateBusinessInfo } = require('../services/mongodb');
+const { User } = require('../models');
 
 /**
  * Middleware לאימות משתמש באמצעות MongoDB
  */
 const authMiddleware = async (req, res, next) => {
   try {
-    // בדיקה אם יש מזהה משתמש ישירות בבקשה (עדיף על פני טוקן)
-    if (req.body && req.body.userId) {
-      req.userId = req.body.userId;
-      console.log(`Auth middleware using userId from request body: ${req.userId}`);
-      return next();
-    } else if (req.query && req.query.userId) {
-      req.userId = req.query.userId;
-      console.log(`Auth middleware using userId from query params: ${req.userId}`);
-      return next();
-    } else if (req.headers && req.headers['x-user-id']) {
-      req.userId = req.headers['x-user-id'];
-      console.log(`Auth middleware using userId from headers: ${req.userId}`);
-      return next();
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ success: false, message: 'No authorization header' });
     }
     
-    // אם הגענו לכאן, אין מזהה ישיר ואנו מנסים לפענח את הטוקן
+    const token = authHeader.split(' ')[1];
     
-    // במצב פיתוח, השתמש במשתמש ברירת מחדל אם אין טוקן
-    if (process.env.NODE_ENV === 'development') {
-      const defaultUserId = 'PIHxt2lDk8bahTSRmSTvaznBXa23';
-      
-      // בדיקה אם קיים token
-      const token = req.headers.authorization;
-      if (!token) {
-        console.log(`No token in development mode, using default userId: ${defaultUserId}`);
-        req.userId = defaultUserId;
-        return next();
-      }
-      
-      try {
-        // נסה לפענח את הטוקן
-        const decodedToken = await mongodbService.verifyIdToken(token.replace('Bearer ', ''));
-        if (decodedToken && decodedToken.uid) {
-          req.userId = decodedToken.uid;
-          console.log(`Auth middleware set userId to: ${req.userId} from token (in development)`);
-          return next();
-        } else {
-          // אם הפענוח נכשל, השתמש במשתמש ברירת מחדל
-          req.userId = defaultUserId;
-          console.log(`Token decode failed in development, using default userId: ${defaultUserId}`);
-          return next();
-        }
-      } catch (tokenError) {
-        // במקרה של שגיאת פענוח, השתמש במשתמש ברירת מחדל
-        console.log(`Token verification error in development, using default userId: ${defaultUserId}`);
-        req.userId = defaultUserId;
-        return next();
-      }
-    }
-    
-    // במצב ייצור
-    
-    // בדיקה אם קיים token
-    const token = req.headers.authorization;
     if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authorization token missing'
-      });
+      return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+
+    try {
+      // Decode the JWT token to get the payload
+      const tokenParts = token.split('.');
+      if (tokenParts.length !== 3) {
+        return res.status(401).json({ success: false, message: 'Invalid token format' });
     }
     
-    // אימות ה-token
-    try {
-      const decodedToken = await mongodbService.verifyIdToken(token.replace('Bearer ', ''));
-      
-      if (!decodedToken || !decodedToken.uid) {
-        return res.status(401).json({
-          success: false,
-          message: 'Invalid token - could not extract user ID'
-        });
+      const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+      const userId = payload.user_id; // Get the user_id from the decoded token
+
+      if (!userId) {
+        return res.status(401).json({ success: false, message: 'No user ID in token' });
       }
+
+      // Check if user exists in database
+      let user = await getUserData(userId);
       
-      // הוספת מזהה המשתמש לבקשה
-      req.userId = decodedToken.uid;
-      console.log(`Auth middleware set userId to: ${req.userId} from token`);
-      next();
-    } catch (tokenError) {
-      console.error('Token verification error:', tokenError);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token',
-        error: process.env.NODE_ENV === 'development' ? tokenError.message : undefined
-      });
+      // If user doesn't exist, create new user
+      if (!user) {
+        console.log(`User ${userId} not found, creating new user`);
+        
+        const newUser = new User({
+          uid: userId,
+          email: payload.email || `${userId}@example.com`,
+          displayName: payload.name || `User ${userId.substring(0, 8)}`,
+          role: 'user',
+          isActive: true,
+          whatsappStatus: { status: 'disconnected', lastUpdated: new Date() },
+          businessInfo: {
+            name: 'עסק חדש',
+            description: 'תיאור העסק',
+            industry: 'כללי',
+            services: 'שירותים',
+            hours: 'שעות פעילות',
+            contact: 'פרטי קשר',
+            address: 'כתובת',
+            website: '',
+            additionalInfo: 'מידע נוסף'
+          }
+        });
+        
+        await newUser.save();
+        user = await getUserData(userId);
+      }
+
+      if (!user.isActive) {
+        return res.status(403).json({ success: false, message: 'User is not active' });
+      }
+
+      req.userId = userId;
+      req.user = user;
+      
+    next();
+    } catch (error) {
+      console.error('Error in user authentication:', error);
+      return res.status(500).json({ success: false, message: 'Error authenticating user' });
     }
   } catch (error) {
-    console.error('Auth error:', error);
-    
-    // במקרה של כישלון אימות, נשתמש במשתמש ברירת מחדל במצב פיתוח
-    if (process.env.NODE_ENV === 'development') {
-      req.userId = 'PIHxt2lDk8bahTSRmSTvaznBXa23';
-      console.log(`Auth error, using default userId: ${req.userId} in development mode`);
-      return next();
-    }
-    
-    res.status(401).json({
-      success: false,
-      message: 'לא מורשה',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('Auth middleware error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 };
 
-module.exports = { authMiddleware }; 
+module.exports = authMiddleware; 
