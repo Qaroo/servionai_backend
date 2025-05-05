@@ -102,7 +102,7 @@ if (process.env.NODE_ENV === 'production') {
 // Define routes before starting the server
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/ai', aiRoutes);
-app.use('/api/ai', naamaRoutes);
+app.use('/api/naama', naamaRoutes);
 app.use('/api/bot', botRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', usersRoutes);
