@@ -14,10 +14,7 @@ app.use(morgan('dev'));
 app.use(helmet());
 app.use(compression());
 
-// Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/users', require('./routes/users'));
-app.use('/api/chat', require('./routes/chat'));
+// Routes will be loaded in index.js to avoid conflicts
 
 // Error handling
 app.use((err, req, res, next) => {

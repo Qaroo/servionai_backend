@@ -99,33 +99,7 @@ if (process.env.NODE_ENV === 'production') {
   console.log('Rate limiting disabled for development environment');
 }
 
-const startServer = async () => {
-  try {
-    // התחברות ל-MongoDB ואתחול המודלים
-    await initializeMongoDB();
-    console.log('MongoDB models initialized successfully');
-
-    // התחברות ל-Redis
-    await initRedis();
-    console.log('Redis connection test successful');
-
-    // אתחול שירות WhatsApp
-    await initializeWhatsApp(io);
-    console.log('WhatsApp service initialized');
-
-    // הפעלת השרת
-    server.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-};
-
-startServer();
-
-// Routes
+// Define routes before starting the server
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/ai', naamaRoutes);
@@ -161,6 +135,32 @@ app.use((req, res) => {
     message: 'הנתיב המבוקש לא נמצא'
   });
 });
+
+const startServer = async () => {
+  try {
+    // התחברות ל-MongoDB ואתחול המודלים
+    await initializeMongoDB();
+    console.log('MongoDB models initialized successfully');
+
+    // התחברות ל-Redis
+    await initRedis();
+    console.log('Redis connection test successful');
+
+    // אתחול שירות WhatsApp
+    await initializeWhatsApp(io);
+    console.log('WhatsApp service initialized');
+
+    // הפעלת השרת
+    server.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
