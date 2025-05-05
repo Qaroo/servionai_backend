@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getUserData, updateBusinessInfo } = require('../services/mongodb');
-const authMiddleware = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // קבלת פרטי המשתמש הנוכחי
 router.get('/current', authMiddleware, async (req, res) => {

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongodb = require('../services/mongodb');
-const auth = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 
 // ניתוב מאובטח שדורש הרשאות מנהל
 const requireAdmin = async (req, res, next) => {
@@ -26,7 +26,7 @@ const requireAdmin = async (req, res, next) => {
 };
 
 // קבל את כל המשתמשים במערכת
-router.get('/users', auth, requireAdmin, async (req, res) => {
+router.get('/users', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const users = await mongodb.getAllUsers(req.userId);
     return res.json({ success: true, users });
@@ -41,7 +41,7 @@ router.get('/users', auth, requireAdmin, async (req, res) => {
 });
 
 // קבל פרטי משתמש מפורטים
-router.get('/users/:userId', auth, requireAdmin, async (req, res) => {
+router.get('/users/:userId', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const userDetails = await mongodb.getUserDetailsForAdmin(req.userId, req.params.userId);
     return res.json({ success: true, userDetails });
@@ -56,7 +56,7 @@ router.get('/users/:userId', auth, requireAdmin, async (req, res) => {
 });
 
 // אקטיבציה/השבתה של משתמש
-router.put('/users/:userId/activate', auth, requireAdmin, async (req, res) => {
+router.put('/users/:userId/activate', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { isActive, notes } = req.body;
     const updatedUser = await mongodb.setUserActiveStatus(
@@ -88,7 +88,7 @@ router.put('/users/:userId/activate', auth, requireAdmin, async (req, res) => {
 });
 
 // עדכון הרשאות מנהל
-router.put('/users/:userId/admin', auth, requireAdmin, async (req, res) => {
+router.put('/users/:userId/admin', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { isAdmin } = req.body;
     const updatedUser = await mongodb.setUserAdminStatus(
@@ -113,7 +113,7 @@ router.put('/users/:userId/admin', auth, requireAdmin, async (req, res) => {
 });
 
 // עדכון פרטי משתמש
-router.put('/users/:userId', auth, requireAdmin, async (req, res) => {
+router.put('/users/:userId', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const updatedUser = await mongodb.updateUserDetails(
       req.userId, 
@@ -137,7 +137,7 @@ router.put('/users/:userId', auth, requireAdmin, async (req, res) => {
 });
 
 // אימון בוט למשתמש על ידי מנהל
-router.post('/users/:userId/train-bot', auth, requireAdmin, async (req, res) => {
+router.post('/users/:userId/train-bot', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const result = await mongodb.trainUserBotByAdmin(
       req.userId, 
@@ -190,7 +190,7 @@ router.post('/initialize', async (req, res) => {
 });
 
 // עדכון הגדרות כלליות של המערכת
-router.put('/settings', auth, requireAdmin, async (req, res) => {
+router.put('/settings', authMiddleware, requireAdmin, async (req, res) => {
   try {
     // TODO: להוסיף פונקציונליות לעדכון הגדרות מערכת בהמשך
     return res.json({ 
@@ -208,7 +208,7 @@ router.put('/settings', auth, requireAdmin, async (req, res) => {
 });
 
 // יצירת משתמש חדש (זמין רק למנהלים)
-router.post('/users/create', auth, requireAdmin, async (req, res) => {
+router.post('/users/create', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const {
       email,

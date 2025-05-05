@@ -14,8 +14,6 @@ app.use(morgan('dev'));
 app.use(helmet());
 app.use(compression());
 
-// Routes will be loaded in index.js to avoid conflicts
-
 // Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);

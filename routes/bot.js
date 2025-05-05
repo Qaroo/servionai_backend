@@ -98,7 +98,7 @@ router.post('/settings', authMiddleware, async (req, res) => {
     if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'production') {
       res.json({ success: true, message: 'Bot settings virtually updated (ignoring errors in development/production mode)' });
     } else {
-    res.status(500).json({ success: false, error: 'Failed to update bot settings' });
+      res.status(500).json({ success: false, error: 'Failed to update bot settings' });
     }
   }
 });
