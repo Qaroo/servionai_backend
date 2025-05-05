@@ -1,14 +1,22 @@
 const Redis = require('ioredis');
 
-const redisClient = new Redis({
+const redisConfig = {
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: process.env.REDIS_PORT || 6379,
+  password: process.env.REDIS_PASSWORD,
   maxRetriesPerRequest: 3,
   retryStrategy(times) {
     const delay = Math.min(times * 50, 2000);
     return delay;
   }
-});
+};
+
+// אם יש URL מלא של Redis, השתמש בו
+if (process.env.REDIS_URL) {
+  redisConfig.url = process.env.REDIS_URL;
+}
+
+const redisClient = new Redis(redisConfig);
 
 redisClient.on('error', (err) => {
   if (err.code === 'ECONNREFUSED') {
