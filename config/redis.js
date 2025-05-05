@@ -2,6 +2,7 @@ const Redis = require('ioredis');
 
 const redisConfig = {
   url: process.env.REDIS_URL || 'redis://default:n2GofQre4falRtw1q7d6Bpzevq6zEZIz@redis-15130.crce198.eu-central-1-3.ec2.redns.redis-cloud.com:15130',
+  tls: {},
 };
 
 
