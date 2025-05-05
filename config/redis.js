@@ -5,6 +5,7 @@ const Redis = require('ioredis');
 const redisClient = new Redis(process.env.REDIS_URL || 'rediss://default:n2GofQre4falRtw1q7d6Bpzevq6zEZIz@redis-15130.crce198.eu-central-1-3.ec2.redns.redis-cloud.com:15130');
 
 redisClient.on('error', (err) => {
+  console.log("Trying to login in to ", process.env.REDIS_URL || 'rediss://default:n2GofQre4falRtw1q7d6Bpzevq6zEZIz@redis-15130.crce198.eu-central-1-3.ec2.redns.redis-cloud.com:15130');
   if (err.code === 'ECONNREFUSED') {
     console.warn('Redis connection refused. Make sure Redis server is running.');
     if (process.env.NODE_ENV === 'development') {
