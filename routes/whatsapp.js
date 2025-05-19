@@ -631,4 +631,33 @@ router.post('/send-mass-message', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * @route GET /api/health
+ * @desc Check server health
+ * @access Public
+ */
+router.get('/health', (req, res) => {
+  try {
+    // Get system info
+    const healthInfo = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      version: process.env.npm_package_version || '1.0.0',
+      platform: process.platform,
+      nodejs: process.version,
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      sessions_dir: process.env.SESSIONS_DIR || './sessions',
+      sessions_dir_exists: require('fs').existsSync(process.env.SESSIONS_DIR || './sessions'),
+    };
+
+    // Return health check data
+    return res.status(200).json(healthInfo);
+  } catch (error) {
+    console.error('Health check failed:', error);
+    return res.status(500).json({ status: 'error', error: error.message });
+  }
+});
+
 module.exports = router; 

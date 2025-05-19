@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
-const { redisClient } = require('../config/redis');
+const fs = require('fs');
+const path = require('path');
 
 // יצירת מופע של OpenAI API
 let openai;
@@ -459,8 +460,8 @@ const determineModel = (message, context) => {
 // פונקציה לניהול שיחה חכמה
 const handleSmartConversation = async (message, userId, businessInfo) => {
   try {
-    // קבלת סיכום השיחה הקודמת מ-Redis
-    const previousSummary = await redisClient.get(`conversationSummary:${userId}`);
+    // קבלת סיכום השיחה הקודמת מהדיסק
+    const previousSummary = await getPreviousSummary(userId);
     
     // קביעת המודל המתאים
     const model = determineModel(message, previousSummary || '');
@@ -494,7 +495,7 @@ const handleSmartConversation = async (message, userId, businessInfo) => {
 
     // שמירת סיכום השיחה הנוכחית
     const newSummary = await generateConversationSummary(messages, businessInfo);
-    await redisClient.set(`conversationSummary:${userId}`, newSummary);
+    await saveSummary(userId, newSummary);
 
     // החזרת התשובה ומידע על השימוש בטוקנים
     return {
@@ -518,4 +519,23 @@ module.exports = {
   textToSpeech,
   generateChatResponse,
   handleSmartConversation
-}; 
+};
+
+// קבלת סיכום השיחה הקודמת מהדיסק
+const summaryDir = path.join(__dirname, '../temp/conversationSummaries');
+if (!fs.existsSync(summaryDir)) fs.mkdirSync(summaryDir, { recursive: true });
+const summaryPath = (userId) => path.join(summaryDir, `conversationSummary-${userId}.json`);
+
+async function getPreviousSummary(userId) {
+  try {
+    if (fs.existsSync(summaryPath(userId))) {
+      const data = fs.readFileSync(summaryPath(userId), 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function saveSummary(userId, newSummary) {
+  fs.writeFileSync(summaryPath(userId), JSON.stringify(newSummary));
+} 

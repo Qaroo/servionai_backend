@@ -10,7 +10,6 @@ const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const app = require('./app');
 const { connectDB } = require('./config/db');
-const { redisClient } = require('./config/redis');
 const { PORT = 5001 } = process.env;
 
 // אם לא הוגדר סביבה, נקבע לפיתוח כברירת מחדל
@@ -21,20 +20,30 @@ if (!process.env.NODE_ENV) {
 
 console.log(`Starting server in ${process.env.NODE_ENV} mode`);
 
-// התחברות ל-Redis
-const initRedis = async () => {
-  try {
-    await redisClient.ping();
-    console.log('Redis connection test successful');
-  } catch (error) {
-    if (process.env.NODE_ENV === 'production') {
-      console.error('Redis connection failed in production mode:', error);
-      process.exit(1);
-    } else {
-      console.warn('Redis connection failed in development mode - continuing without Redis');
-}
+// הגדרת נתיבים ספציפיים לסביבות שונות
+if (process.env.NODE_ENV === 'production') {
+  // בסביבת render.com, נתיב התיקיות הקבועות הוא /opt/render/project/src
+  // אבל נתיב התיקיות הזמניות (שמאופשרות לכתיבה) הוא /var/data
+  if (!process.env.SESSIONS_DIR) {
+    process.env.SESSIONS_DIR = '/sessions';
+    console.log(`Setting SESSIONS_DIR to ${process.env.SESSIONS_DIR} for cloud environment`);
   }
-};
+} else {
+  // בסביבת פיתוח נשתמש בנתיב יחסי
+  if (!process.env.SESSIONS_DIR) {
+    process.env.SESSIONS_DIR = path.join(__dirname, 'sessions');
+    console.log(`Setting SESSIONS_DIR to ${process.env.SESSIONS_DIR} for development`);
+  }
+}
+
+// טעינת מידע מערכת והדפסתו ללוגים
+console.log(`System info:
+  Platform: ${process.platform}
+  Architecture: ${process.arch}
+  Node.js version: ${process.version}
+  Current working directory: ${process.cwd()}
+  Sessions directory: ${process.env.SESSIONS_DIR}
+`);
 
 // Routes
 const whatsappRoutes = require('./routes/whatsapp');
@@ -46,6 +55,7 @@ const usersRoutes = require('./routes/users');
 const authRoutes = require('./routes/auth');
 const calendarRoutes = require('./routes/calendar');
 const massMessageRoutes = require('./routes/mass-message');
+const indexRoutes = require('./routes/index');
 
 // Services
 // const { initializeFirebase } = require('./services/firebase');
@@ -64,9 +74,38 @@ const io = new Server(server, {
 });
 
 // Create sessions directory if it doesn't exist
-const sessionsDir = process.env.SESSIONS_DIR || './sessions';
+const sessionsDir = process.env.SESSIONS_DIR;
 if (!fs.existsSync(sessionsDir)) {
-  fs.mkdirSync(sessionsDir, { recursive: true });
+  console.log(`Creating sessions directory at ${sessionsDir}`);
+  try {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    console.log(`Sessions directory created successfully at ${sessionsDir}`);
+    
+    // בדיקת הרשאות כתיבה לתיקייה
+    try {
+      const testFile = path.join(sessionsDir, 'test-write-permissions.txt');
+      fs.writeFileSync(testFile, 'Test write permissions');
+      fs.unlinkSync(testFile);
+      console.log(`Write permissions confirmed for sessions directory at ${sessionsDir}`);
+    } catch (writeError) {
+      console.error(`Error writing to sessions directory at ${sessionsDir}:`, writeError);
+      console.error('This might cause WhatsApp authentication to fail!');
+    }
+  } catch (mkdirError) {
+    console.error(`Error creating sessions directory at ${sessionsDir}:`, mkdirError);
+    console.error('This might cause WhatsApp authentication to fail!');
+    
+    // ננסה ליצור בנתיב חלופי במקרה של שגיאה
+    const fallbackDir = path.join(process.cwd(), 'sessions');
+    console.log(`Attempting to create fallback sessions directory at ${fallbackDir}`);
+    try {
+      fs.mkdirSync(fallbackDir, { recursive: true });
+      process.env.SESSIONS_DIR = fallbackDir;
+      console.log(`Using fallback sessions directory at ${fallbackDir}`);
+    } catch (fallbackError) {
+      console.error(`Error creating fallback sessions directory:`, fallbackError);
+    }
+  }
 }
 
 // Middleware
@@ -105,10 +144,6 @@ const startServer = async () => {
     await initializeMongoDB();
     console.log('MongoDB models initialized successfully');
 
-    // התחברות ל-Redis
-    await initRedis();
-    console.log('Redis connection test successful');
-      
     // אתחול שירות WhatsApp
     await initializeWhatsApp(io);
     console.log('WhatsApp service initialized');
@@ -135,6 +170,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/mass-message', massMessageRoutes);
+app.use('/api', indexRoutes);
 
 // הוספת שירות סטטי לתיקיית הקבצים הזמניים (כולל קבצי אודיו)
 const tempDir = path.join(__dirname, '..', 'temp');

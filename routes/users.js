@@ -76,6 +76,13 @@ router.put('/profile', authMiddleware, async (req, res) => {
     try {
       // עדכון המשתמש
       updatedUser = await getUserData(req.userId);
+      
+      // עדכון פרטי העסק אם הם נשלחו
+      if (req.body.businessInfo) {
+        await updateBusinessInfo(req.userId, req.body.businessInfo);
+        // קבלת המשתמש המעודכן
+        updatedUser = await getUserData(req.userId);
+      }
     } catch (error) {
       if (error.message === 'User not found') {
         // אם המשתמש לא קיים, יצירת משתמש חדש עם המידע שסופק

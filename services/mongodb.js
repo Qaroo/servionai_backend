@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
-const { redisClient } = require('../config/redis');
 const { v4: uuidv4 } = require('uuid');
 const { User, BusinessInfo } = require('../models');
 
