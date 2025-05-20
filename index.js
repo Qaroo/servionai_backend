@@ -20,31 +20,6 @@ if (!process.env.NODE_ENV) {
 
 console.log(`Starting server in ${process.env.NODE_ENV} mode`);
 
-// הגדרת נתיבים ספציפיים לסביבות שונות
-if (process.env.NODE_ENV === 'production') {
-  // בסביבת render.com, נתיב התיקיות הקבועות הוא /opt/render/project/src
-  // אבל נתיב התיקיות הזמניות (שמאופשרות לכתיבה) הוא /var/data
-  if (!process.env.SESSIONS_DIR) {
-    process.env.SESSIONS_DIR = '/sessions';
-    console.log(`Setting SESSIONS_DIR to ${process.env.SESSIONS_DIR} for cloud environment`);
-  }
-} else {
-  // בסביבת פיתוח נשתמש בנתיב יחסי
-  if (!process.env.SESSIONS_DIR) {
-    process.env.SESSIONS_DIR = path.join(__dirname, 'sessions');
-    console.log(`Setting SESSIONS_DIR to ${process.env.SESSIONS_DIR} for development`);
-  }
-}
-
-// טעינת מידע מערכת והדפסתו ללוגים
-console.log(`System info:
-  Platform: ${process.platform}
-  Architecture: ${process.arch}
-  Node.js version: ${process.version}
-  Current working directory: ${process.cwd()}
-  Sessions directory: ${process.env.SESSIONS_DIR}
-`);
-
 // Routes
 const whatsappRoutes = require('./routes/whatsapp');
 const aiRoutes = require('./routes/ai');
@@ -55,7 +30,6 @@ const usersRoutes = require('./routes/users');
 const authRoutes = require('./routes/auth');
 const calendarRoutes = require('./routes/calendar');
 const massMessageRoutes = require('./routes/mass-message');
-const indexRoutes = require('./routes/index');
 
 // Services
 // const { initializeFirebase } = require('./services/firebase');
@@ -74,38 +48,9 @@ const io = new Server(server, {
 });
 
 // Create sessions directory if it doesn't exist
-const sessionsDir = process.env.SESSIONS_DIR;
+const sessionsDir = process.env.SESSIONS_DIR || './sessions';
 if (!fs.existsSync(sessionsDir)) {
-  console.log(`Creating sessions directory at ${sessionsDir}`);
-  try {
-    fs.mkdirSync(sessionsDir, { recursive: true });
-    console.log(`Sessions directory created successfully at ${sessionsDir}`);
-    
-    // בדיקת הרשאות כתיבה לתיקייה
-    try {
-      const testFile = path.join(sessionsDir, 'test-write-permissions.txt');
-      fs.writeFileSync(testFile, 'Test write permissions');
-      fs.unlinkSync(testFile);
-      console.log(`Write permissions confirmed for sessions directory at ${sessionsDir}`);
-    } catch (writeError) {
-      console.error(`Error writing to sessions directory at ${sessionsDir}:`, writeError);
-      console.error('This might cause WhatsApp authentication to fail!');
-    }
-  } catch (mkdirError) {
-    console.error(`Error creating sessions directory at ${sessionsDir}:`, mkdirError);
-    console.error('This might cause WhatsApp authentication to fail!');
-    
-    // ננסה ליצור בנתיב חלופי במקרה של שגיאה
-    const fallbackDir = path.join(process.cwd(), 'sessions');
-    console.log(`Attempting to create fallback sessions directory at ${fallbackDir}`);
-    try {
-      fs.mkdirSync(fallbackDir, { recursive: true });
-      process.env.SESSIONS_DIR = fallbackDir;
-      console.log(`Using fallback sessions directory at ${fallbackDir}`);
-    } catch (fallbackError) {
-      console.error(`Error creating fallback sessions directory:`, fallbackError);
-    }
-  }
+  fs.mkdirSync(sessionsDir, { recursive: true });
 }
 
 // Middleware
@@ -138,24 +83,60 @@ if (process.env.NODE_ENV === 'production') {
   console.log('Rate limiting disabled for development environment');
 }
 
+// Middleware for handling production environment on Render
+app.use((req, res, next) => {
+  // Set secure headers for production
+  if (process.env.NODE_ENV === 'production') {
+    // Force HTTPS
+    if (req.headers['x-forwarded-proto'] !== 'https') {
+      return res.redirect(`https://${req.headers.host}${req.url}`);
+    }
+    
+    // Add longer timeout for Render environment
+    req.setTimeout(120000); // 2 minutes
+    res.setTimeout(120000); // 2 minutes
+  }
+  next();
+});
+
 const startServer = async () => {
   try {
-    // התחברות ל-MongoDB ואתחול המודלים
+    console.log('Starting server...');
+    console.log(`Node environment: ${process.env.NODE_ENV}`);
+    console.log(`MongoDB URI: ${process.env.MONGODB_URI ? '✓ Connected' : '✗ Missing'}`);
+    console.log(`OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✓ Connected' : '✗ Missing'}`);
+    
+    // Add more detailed server information
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Running in PRODUCTION mode');
+      console.log('Platform:', process.platform);
+      console.log('Architecture:', process.arch);
+      console.log('Node version:', process.version);
+      
+      // For Render deployment debugging
+      console.log('Environment variables available:', Object.keys(process.env).filter(key => !key.includes('KEY') && !key.includes('SECRET')));
+    }
+    
+    // Initialize MongoDB
     await initializeMongoDB();
-    console.log('MongoDB models initialized successfully');
-
-    // אתחול שירות WhatsApp
+    console.log('MongoDB connected successfully');
+    
+    // Initialize WhatsApp with socketIO
     await initializeWhatsApp(io);
-    console.log('WhatsApp service initialized');
-
-    // הפעלת השרת
+    console.log('WhatsApp service initialized successfully');
+    
+    // Start HTTP server
     server.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Server URL: http://localhost:${PORT}`);
+      if (process.env.NODE_ENV === 'production') {
+        console.log('Server is ready to receive WhatsApp connections');
+      }
     });
   } catch (error) {
     console.error('Failed to start server:', error);
-      process.exit(1);
-    }
+    process.exit(1);
+  }
 };
 
 startServer();
@@ -170,7 +151,6 @@ app.use('/api/users', usersRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/mass-message', massMessageRoutes);
-app.use('/api', indexRoutes);
 
 // הוספת שירות סטטי לתיקיית הקבצים הזמניים (כולל קבצי אודיו)
 const tempDir = path.join(__dirname, '..', 'temp');

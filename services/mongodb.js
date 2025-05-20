@@ -205,14 +205,22 @@ const getUserData = async (userId) => {
 // שמירת מידע סשן וואטסאפ
 const saveWhatsAppSession = async (userId, sessionData) => {
   try {
-    await collections.WhatsappSession.updateOne(
-      { userId },
-      { userId, sessionData, updatedAt: new Date() },
-      { upsert: true }
+    const Session = mongoose.model('Session');
+    
+    // Update or create session
+    await Session.findOneAndUpdate(
+      { userId }, 
+      { 
+        userId,
+        sessionData,
+        updatedAt: new Date() 
+      },
+      { upsert: true, new: true }
     );
+    
     return true;
   } catch (error) {
-    console.error(`Error saving WhatsApp session for ${userId}:`, error);
+    console.error('Error saving WhatsApp session:', error);
     return false;
   }
 };
@@ -220,22 +228,23 @@ const saveWhatsAppSession = async (userId, sessionData) => {
 // קבלת מידע סשן וואטסאפ
 const getWhatsAppSession = async (userId) => {
   try {
-    const session = await collections.WhatsappSession.findOne({ userId });
-    return session;
+    const Session = mongoose.model('Session');
+    const session = await Session.findOne({ userId });
+    return session ? session.sessionData : null;
   } catch (error) {
-    console.error(`Error getting WhatsApp session for ${userId}:`, error);
+    console.error('Error getting WhatsApp session:', error);
     return null;
   }
 };
 
 // מחיקת סשן WhatsApp של משתמש
-const removeWhatsAppSession = async (userId) => {
+const deleteWhatsAppSession = async (userId) => {
   try {
-    await collections.WhatsappSession.deleteOne({ userId });
-    console.log(`Successfully removed WhatsApp session for user ${userId}`);
+    const Session = mongoose.model('Session');
+    await Session.deleteOne({ userId });
     return true;
   } catch (error) {
-    console.error(`Error removing WhatsApp session for ${userId}:`, error);
+    console.error('Error deleting WhatsApp session:', error);
     return false;
   }
 };
@@ -260,7 +269,7 @@ const updateWhatsAppStatus = async (userId, status) => {
     
     // אם הסטטוס הוא "מנותק", מחק את הסשן
     if (status === 'disconnected') {
-      await removeWhatsAppSession(userId);
+      await deleteWhatsAppSession(userId);
     }
 
     // ניקוי המטמון
@@ -1363,7 +1372,7 @@ module.exports = {
   getUserData,
   saveWhatsAppSession,
   getWhatsAppSession,
-  removeWhatsAppSession,
+  deleteWhatsAppSession,
   updateWhatsAppStatus,
   saveWhatsAppMessage,
   updateConversationLastMessage,

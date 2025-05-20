@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, NoAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const mongodbService = require('./mongodb');
 const openaiService = require('./openai');
+const MongoDBAuthStrategy = require('./MongoDBAuthStrategy');
 
 // מאגר של חיבורי WhatsApp פעילים
 const clients = new Map();
@@ -90,9 +91,13 @@ async function handleMessage(message, session) {
  */
 const createClient = async (userId) => {
   try {
+    console.log(`[createClient] Creating WhatsApp client for user: ${userId}`);
+    
     // בדיקה אם כבר קיים לקוח למשתמש זה
     if (clients.has(userId)) {
       const existingClient = clients.get(userId);
+      
+      console.log(`[createClient] Client already exists with status: ${existingClient.status}`);
       
       // אם הלקוח כבר מאותחל, החזר שגיאה
       if (existingClient.status === 'CONNECTED') {
@@ -113,85 +118,39 @@ const createClient = async (userId) => {
       
       // סגירת הלקוח הקיים אם הוא לא תקין
       try {
+        console.log(`[createClient] Destroying existing client for user: ${userId}`);
         await existingClient.client.destroy();
       } catch (error) {
-        console.error('Error destroying existing client:', error);
+        console.error('[createClient] Error destroying existing client:', error);
       }
       
       // הסרת הלקוח מהמאגר
       clients.delete(userId);
+      console.log(`[createClient] Removed existing client for user: ${userId}`);
     }
     
-    // יצירת תיקיית session אם לא קיימת
-    const sessionDir = path.join(process.env.SESSIONS_DIR || './sessions', userId);
-    if (!fs.existsSync(sessionDir)) {
-      try {
-        fs.mkdirSync(sessionDir, { recursive: true });
-        console.log(`[WhatsApp] Created session directory at ${sessionDir}`);
-        
-        // בדיקת הרשאות כתיבה
-        const testFile = path.join(sessionDir, 'test-write.txt');
-        fs.writeFileSync(testFile, 'Test write permissions');
-        fs.unlinkSync(testFile);
-        console.log(`[WhatsApp] Write permissions confirmed for ${sessionDir}`);
-      } catch (error) {
-        console.error(`[WhatsApp] Error creating or writing to session directory ${sessionDir}:`, error);
-        console.error('[WhatsApp] This may cause authentication issues!');
+    // נסה לטעון סשן קיים מ-MongoDB
+    let sessionData = null;
+    try {
+      sessionData = await mongodbService.getWhatsAppSession(userId);
+      if (sessionData) {
+        console.log(`[createClient] Found existing session in MongoDB for user: ${userId}`);
       }
-    } else {
-      console.log(`[WhatsApp] Using existing session directory: ${sessionDir}`);
+    } catch (error) {
+      console.error(`[createClient] Error retrieving session from MongoDB for user ${userId}:`, error);
+      // ממשיכים גם אם אין סשן
     }
     
-    // בסביבת ייצור, נשתמש בהגדרות גוגל כרום מותאמות
-    let browserArgs = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-      '--single-process', // חשוב בסביבת render.com
-      '--disable-extensions',
-      '--disable-features=site-per-process',
-      '--ignore-certificate-errors',
-      '--disable-web-security',
-      '--allow-running-insecure-content'
-    ];
-    
-    // אם בסביבת ענן, הוסף פרמטרים מיוחדים
-    if (process.env.NODE_ENV === 'production') {
-      browserArgs = browserArgs.concat([
-        '--disable-software-rasterizer',
-        '--disable-dev-profile'
-      ]);
-    }
-    
-    // תצורה של puppeteer לעבודה אופטימלית
-    const puppeteerConfig = {
-      headless: true,
-      args: browserArgs,
-      ignoreHTTPSErrors: true,
-      executablePath: process.env.NODE_ENV === 'production' 
-        ? '/usr/bin/google-chrome-stable' // נתיב ב-render.com או בסביבת ייצור אחרת
-        : undefined // השתמש בברירת המחדל בסביבת פיתוח
-    };
-    
-    console.log(`[WhatsApp] Creating client for user ${userId} with puppeteer config:`, JSON.stringify({
-      ...puppeteerConfig,
-      args: browserArgs.length
-    }));
-
-    // יצירת לקוח WhatsApp חדש
+    // יצירת לקוח WhatsApp חדש עם NoAuth strategy
+    console.log(`[createClient] Creating new client for user: ${userId} with NoAuth Strategy`);
     const client = new Client({
-      authStrategy: new LocalAuth({ 
-        clientId: userId,
-        dataPath: process.env.SESSIONS_DIR || './sessions'
-      }),
-      puppeteer: puppeteerConfig,
+      authStrategy: new NoAuth(),
       webVersionCache: {
-        type: 'remote', // כדי למנוע את הצורך בהורדת גרסת ווצאפ ווב בכל התחברות
-      }
+        type: 'remote',
+      },
+      puppeteer: null, // ביטול השימוש בפאפטיר לחלוטין
+      webVersion: '2.2326.0',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     });
     
     // אובייקט לשמירת מידע על החיבור
@@ -205,114 +164,161 @@ const createClient = async (userId) => {
     
     // שמירת הלקוח במאגר
     clients.set(userId, clientInfo);
+    console.log(`[createClient] Client instance created and stored for user: ${userId}`);
     
     // אירוע קבלת קוד QR
     client.on('qr', async (qr) => {
       try {
-        console.log(`[WhatsApp] QR Code received for user ${userId}. QR length: ${qr?.length}`);
+        console.log(`[QR Event] QR Code received for user: ${userId}`);
       
         // יצירת תמונת QR פשוטה יותר
-          const qrDataURL = await qrcode.toDataURL(qr, {
+        const qrDataURL = await qrcode.toDataURL(qr, {
           errorCorrectionLevel: 'L',
           margin: 1,
           scale: 4
-          });
+        });
         
-          clientInfo.qrCode = qrDataURL;
+        clientInfo.qrCode = qrDataURL;
         clientInfo.status = 'INITIALIZING';
-        console.log(`[WhatsApp] QR code converted to data URL for user ${userId}. Status updated to INITIALIZING.`);
         
         // עדכון סטטוס החיבור ב-MongoDB
         await mongodbService.updateWhatsAppStatus(userId, 'connecting');
-        console.log(`[WhatsApp] MongoDB status updated to 'connecting' for user ${userId}`);
+        console.log(`[QR Event] Updated QR code and status for user: ${userId}`);
+        
+        // שליחת אירוע QR דרך Socket.IO
+        if (io) {
+          io.to(userId).emit('whatsapp_qr', { qrCode: qrDataURL });
+          console.log(`[QR Event] Emitted QR code via Socket.IO to user: ${userId}`);
+        }
       } catch (error) {
-        console.error(`[WhatsApp] Error generating QR image for user ${userId}:`, error);
+        console.error('[QR Event] Error generating QR image:', error);
         clientInfo.qrCode = qr;
         clientInfo.status = 'INITIALIZING';
       }
     });
     
     // אירוע אימות מוצלח
-    client.on('authenticated', () => {
-      console.log(`[WhatsApp] Client ${userId} authenticated successfully`);
+    client.on('authenticated', async (session) => {
+      console.log(`[Authenticated Event] Client ${userId} authenticated successfully`);
       clientInfo.status = 'AUTHENTICATED';
+      
+      // שמירת הסשן ב-MongoDB
+      try {
+        await mongodbService.saveWhatsAppSession(userId, session);
+        console.log(`[Authenticated Event] Session saved to MongoDB for user: ${userId}`);
+      } catch (error) {
+        console.error(`[Authenticated Event] Error saving session to MongoDB for user ${userId}:`, error);
+      }
+      
+      // שליחת אירוע אימות דרך Socket.IO
+      if (io) {
+        io.to(userId).emit('whatsapp_authenticated');
+        console.log(`[Authenticated Event] Emitted authentication event via Socket.IO to user: ${userId}`);
+      }
     });
     
     // אירוע מוכן לשימוש
     client.on('ready', async () => {
-      console.log(`Client ${userId} is ready and connected`);
+      console.log(`[Ready Event] Client ${userId} is ready`);
       clientInfo.status = 'CONNECTED';
       
       // עדכון סטטוס החיבור ב-MongoDB
       await mongodbService.updateWhatsAppStatus(userId, 'connected');
       
-      // נקה את קוד ה-QR כי כבר לא צריך אותו
-      clientInfo.qrCode = null;
-      
-      // נקבל מידע על המשתמש המחובר
-      try {
-        const info = await client.getState();
-        console.log(`Connected WhatsApp state: ${info}`);
-        
-        // נסיון לקבל מידע על הטלפון המחובר
-        try {
-          const phoneInfo = await client.getWid();
-          console.log(`Connected phone number: ${phoneInfo}`);
-        } catch (err) {
-          console.log('Could not get phone info:', err.message);
-        }
-      } catch (err) {
-        console.log('Could not get state info:', err.message);
+      // שליחת אירוע מוכנות דרך Socket.IO
+      if (io) {
+        io.to(userId).emit('whatsapp_ready');
+        console.log(`[Ready Event] Emitted ready event via Socket.IO to user: ${userId}`);
       }
     });
     
-    // אירוע ניתוק
+    // אירוע התנתקות
     client.on('disconnected', async (reason) => {
-      console.log(`Client ${userId} disconnected. Reason:`, reason);
+      console.log(`[Disconnected Event] Client ${userId} disconnected, reason: ${reason}`);
       clientInfo.status = 'DISCONNECTED';
+      
+      // מחיקת הסשן ב-MongoDB
+      try {
+        await mongodbService.deleteWhatsAppSession(userId);
+        console.log(`[Disconnected Event] Session deleted from MongoDB for user: ${userId}`);
+      } catch (error) {
+        console.error(`[Disconnected Event] Error deleting session from MongoDB for user ${userId}:`, error);
+      }
       
       // עדכון סטטוס החיבור ב-MongoDB
       await mongodbService.updateWhatsAppStatus(userId, 'disconnected');
       
+      // שליחת אירוע התנתקות דרך Socket.IO
+      if (io) {
+        io.to(userId).emit('whatsapp_disconnected', { reason });
+        console.log(`[Disconnected Event] Emitted disconnected event via Socket.IO to user: ${userId}`);
+      }
+      
       // הסרת הלקוח מהמאגר
       clients.delete(userId);
+      console.log(`[Disconnected Event] Removed client from map for user: ${userId}`);
+    });
+    
+    // אירוע שגיאה
+    client.on('auth_failure', async (error) => {
+      console.error(`[Auth Failure Event] Authentication failed for user: ${userId}`, error);
+      clientInfo.status = 'AUTH_FAILURE';
+      
+      // עדכון סטטוס החיבור ב-MongoDB
+      await mongodbService.updateWhatsAppStatus(userId, 'auth_failure');
+      
+      // שליחת אירוע שגיאת אימות דרך Socket.IO
+      if (io) {
+        io.to(userId).emit('whatsapp_auth_failure', { error: error.toString() });
+        console.log(`[Auth Failure Event] Emitted auth failure event via Socket.IO to user: ${userId}`);
+      }
+    });
+    
+    // פתרון באגים
+    client.on('change_state', state => {
+      console.log(`[State Change Event] Client ${userId} state changed to:`, state);
+    });
+    
+    // לוג של כל שגיאה
+    client.on('message_create', async (message) => {
+      console.log(`[Message Create Event] New message created for user: ${userId}, message ID: ${message.id.id}`);
     });
     
     // אירוע קבלת הודעה
     client.on('message', async (message) => {
-      try {
-        if (message.fromMe) return; // התעלם מהודעות שנשלחו על ידי המשתמש
-        const isGroup = message.from.endsWith('@g.us');
-        if(isGroup) return;//התעלם מהודעות בקבוצות
-        console.log(`New message for ${userId} from ${message.from}:`, message.body);
-        
-        // טיפול בהודעה נכנסת
-        await handleIncomingMessage(userId, message);
-      } catch (error) {
-        console.error('Error handling incoming message:', error);
-      }
+      // טיפול בהודעות חדשות
+      console.log(`[Message Event] New message received for user: ${userId}, from: ${message.from}, body length: ${message.body.length}`);
+      await handleIncomingMessage(userId, message);
     });
     
-    // אתחול הלקוח עם טיפול בשגיאות
-    console.log(`[WhatsApp] Initializing WhatsApp client for user ${userId} with Node.js version: ${process.version}`);
-    client.initialize()
-      .then(() => console.log(`[WhatsApp] Client initialized successfully for ${userId}`))
-      .catch((error) => {
-        console.error(`[WhatsApp] Error initializing client for ${userId}:`, error);
-        console.error(`[WhatsApp] Stack trace:`, error.stack);
-        clientInfo.status = 'ERROR';
-        clients.delete(userId);
-      });
-    
-    // החזרת מידע על החיבור
-    return { 
-      success: true, 
-      status: 'INITIALIZING',
-      message: 'WhatsApp client initializing, waiting for QR code'
-    };
+    // אתחול הלקוח
+    console.log(`[createClient] Initializing client for user: ${userId}`);
+    try {
+      await client.initialize();
+      console.log(`[createClient] Client initialized for user: ${userId}`);
+      
+      return { 
+        success: true, 
+        status: 'INITIALIZING',
+        qrCode: clientInfo.qrCode 
+      };
+    } catch (error) {
+      console.error(`[createClient] Error initializing client for user: ${userId}:`, error);
+      
+      // הסרת הלקוח מהמאגר במקרה של שגיאה
+      clients.delete(userId);
+      
+      return { 
+        success: false, 
+        error: `Failed to initialize WhatsApp client: ${error.message}` 
+      };
+    }
   } catch (error) {
-    console.error('Error creating WhatsApp client:', error);
-    throw error;
+    console.error(`[createClient] General error for user: ${userId}:`, error);
+    return { 
+      success: false, 
+      error: error.message 
+    };
   }
 };
 
@@ -323,6 +329,8 @@ const createClient = async (userId) => {
  */
 const handleIncomingMessage = async (userId, message) => {
   try {
+    console.log(`[handleIncomingMessage] Processing message for user: ${userId}, from: ${message.from}`);
+    
     // בדיקה שקיבלנו הודעה וגם משתמש תקין
     if (!message || !userId) {
       console.error('Invalid message or userId received in handleIncomingMessage');
@@ -745,6 +753,8 @@ const getQrCode = async (userId) => {
  */
 const sendMessage = async (userId, chatId, message) => {
   try {
+    console.log(`[sendMessage] Sending message for user: ${userId}, to: ${chatId}, message length: ${message.length}`);
+    
     // בדיקה אם קיים לקוח למשתמש זה
     if (!clients.has(userId)) {
       return { 
@@ -807,49 +817,25 @@ const sendMessage = async (userId, chatId, message) => {
  */
 const disconnect = async (userId) => {
   try {
-    console.log(`[WhatsApp] Attempting to disconnect WhatsApp for user ${userId}`);
+    console.log(`Attempting to disconnect WhatsApp for user ${userId}`);
     
     if (clients.has(userId)) {
       const clientInfo = clients.get(userId);
       
       try {
-        console.log(`[WhatsApp] Destroying client for user ${userId}`);
-        
-        // שימוש בbreakdown מפורט יותר לתהליך הסגירה
-        if (clientInfo && clientInfo.client) {
-          // ניסיון ניתוק לפני סגירה מלאה
-          try {
-            console.log(`[WhatsApp] Attempting to logout client for user ${userId}`);
-            await clientInfo.client.logout();
-            console.log(`[WhatsApp] Client logout successful for user ${userId}`);
-          } catch (logoutError) {
-            console.error(`[WhatsApp] Error during client logout for user ${userId}:`, logoutError);
-            // נמשיך לניסיון הסגירה למרות שגיאה
-          }
-          
-          try {
-            console.log(`[WhatsApp] Destroying client for user ${userId}`);
-            await clientInfo.client.destroy();
-            console.log(`[WhatsApp] Client destroyed successfully for user ${userId}`);
-          } catch (destroyError) {
-            console.error(`[WhatsApp] Error destroying client for user ${userId}:`, destroyError);
-            console.error(`[WhatsApp] Stack trace:`, destroyError.stack);
-            // נמשיך למרות שגיאה
-          }
-        }
-        
-        console.log(`[WhatsApp] Client destruction process completed for user ${userId}`);
+        console.log(`Destroying client for user ${userId}`);
+        await clientInfo.client.destroy();
+        console.log(`Client destroyed successfully for user ${userId}`);
       } catch (error) {
-        console.error(`[WhatsApp] Error during client destruction process for user ${userId}:`, error);
-        console.error(`[WhatsApp] Stack trace:`, error.stack);
+        console.error(`Error destroying client for user ${userId}:`, error);
         // אנחנו ממשיכים בתהליך הניתוק גם במקרה של שגיאה
       }
       
       // מחיקת ה-client מהרשימה
       clients.delete(userId);
-      console.log(`[WhatsApp] Client removed from active clients map for user ${userId}`);
-    } else {
-      console.log(`[WhatsApp] No active client found for user ${userId} to disconnect`);
+      console.log(`Client removed from active clients map for user ${userId}`);
+        } else {
+      console.log(`No active client found for user ${userId} to disconnect`);
     }
     
     // עדכון סטטוס ב-MongoDB
